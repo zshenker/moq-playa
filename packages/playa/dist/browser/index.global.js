@@ -21046,6 +21046,83 @@ var PlayaPlayer = (() => {
     }
   };
 
+  // ../player/dist/warm-start-head.js
+  var WARM_START_HEAD_WAIT_US = 1e6;
+  var WarmStartHead = class {
+    held = /* @__PURE__ */ new Map();
+    deadlineUs;
+    next = null;
+    released = false;
+    headGroup = null;
+    passthrough = false;
+    constructor(nowUs, maxWaitUs = WARM_START_HEAD_WAIT_US) {
+      this.deadlineUs = nowUs + maxWaitUs;
+    }
+    /**
+     * Set the head group from SUBSCRIBE_OK's Largest Object. Without one the
+     * track has no content yet, so no head is coming and objects pass through.
+     */
+    setHeadGroup(group) {
+      if (this.released)
+        return;
+      if (group === null) {
+        this.passthrough = true;
+        return;
+      }
+      this.headGroup = group;
+      this.next = { group, object: 0n };
+    }
+    /** Whether objects now pass straight through. */
+    get done() {
+      return this.passthrough;
+    }
+    /**
+     * Take one object and return those ready for delivery, in order.
+     * @param headOpen whether the fetch delivering the head is still open
+     */
+    push(obj, nowUs, headOpen) {
+      if (this.passthrough)
+        return [obj];
+      const group = BigInt(obj.groupId);
+      const object = BigInt(obj.objectId);
+      const key = `${group}:${object}`;
+      if (!this.held.has(key))
+        this.held.set(key, obj);
+      if (!this.released && this.headGroup === null) {
+        if (this.next === null || group < this.next.group)
+          this.next = { group, object: 0n };
+      }
+      const out = [];
+      while (this.next !== null) {
+        const ready = this.held.get(`${this.next.group}:${this.next.object}`);
+        if (ready === void 0)
+          break;
+        this.held.delete(`${this.next.group}:${this.next.object}`);
+        out.push(ready);
+        this.released = true;
+        this.next = ready.kind === "gap" && ready.status === ObjectStatus.END_OF_GROUP ? { group: this.next.group + 1n, object: 0n } : { group: this.next.group, object: this.next.object + 1n };
+      }
+      if (!headOpen || nowUs >= this.deadlineUs)
+        out.push(...this.drain());
+      return out;
+    }
+    /** Release everything held, in order, and pass later objects through. */
+    drain() {
+      this.passthrough = true;
+      const rest = [...this.held.values()].sort((a, b) => {
+        const ga = BigInt(a.groupId);
+        const gb = BigInt(b.groupId);
+        if (ga !== gb)
+          return ga < gb ? -1 : 1;
+        const oa = BigInt(a.objectId);
+        const ob = BigInt(b.objectId);
+        return oa < ob ? -1 : oa > ob ? 1 : 0;
+      });
+      this.held.clear();
+      return rest;
+    }
+  };
+
   // ../playback/dist/jitter-buffer.js
   function compare(a, b) {
     if (a.groupId < b.groupId)
@@ -29392,7 +29469,7 @@ var PlayaPlayer = (() => {
           active.trackAlias = alias;
           ctx.subscriptionManager?.registerTrack(alias, pending.trackName, pending.mediaType, pending.packaging);
           if (pending.mediaType === "video" || pending.mediaType === "audio") {
-            ctx.onMediaSubscribeOk?.(okReqId, pending.trackName, pending.mediaType);
+            ctx.onMediaSubscribeOk?.(okReqId, pending.trackName, pending.mediaType, extractLargestLocation(msg.parameters));
           }
           ctx.onMediaAliasBound?.(okReqId, alias);
           ctx.onAliasResolved?.(alias);
@@ -30057,6 +30134,8 @@ var PlayaPlayer = (() => {
      * @see draft-ietf-moq-transport-16 §9.16 (FETCH)
      */
     activeFetches = /* @__PURE__ */ new Map();
+    /** Warm-start head ordering for CMAF and LOCMAF tracks, by track name. */
+    warmStartHeads = /* @__PURE__ */ new Map();
     /**
      * Pending TRACK_STATUS queries: requestId → { resolve, reject }.
      * @see draft-ietf-moq-transport-16 §9.19
@@ -31415,9 +31494,9 @@ var PlayaPlayer = (() => {
         pipeline?.pushObject(obj, headers);
       };
       this.subscriptionManager.onLocmafObject = (mediaType, trackName, obj) => {
-        this.onLocmafMediaObject(mediaType, trackName, obj);
+        this.orderWarmStartHead(trackName, obj, (o) => this.onLocmafMediaObject(mediaType, trackName, o));
       };
-      this.subscriptionManager.onCmafObject = (mediaType, trackName, obj) => {
+      const deliverCmafObject = (mediaType, trackName, obj) => {
         this.stampMediaArrival(BigInt(obj.trackAlias));
         this._stats.recordFirstObjectReceived();
         if (obj.kind === "data") {
@@ -31490,6 +31569,9 @@ var PlayaPlayer = (() => {
             return;
         }
         this.cmafAssembler?.push(mediaType, trackName, groupId, obj.payload);
+      };
+      this.subscriptionManager.onCmafObject = (mediaType, trackName, obj) => {
+        this.orderWarmStartHead(trackName, obj, (o) => deliverCmafObject(mediaType, trackName, o));
       };
       this.subscriptionManager.onMalformedTrack = (trackAlias, _mediaType, trackName, error, sourceConnection) => {
         this.handleMalformedTrack(trackAlias, trackName, error, sourceConnection);
@@ -32214,6 +32296,7 @@ var PlayaPlayer = (() => {
       this.bootstrapFetchStreams.clear();
       this.catalogManager?.reset();
       this.activeFetches.clear();
+      this.warmStartHeads.clear();
       this.fetchStreamAliases.clear();
       this.fetchStreamRequestIds.clear();
       this.pendingFetchStreams.clear();
@@ -32365,6 +32448,24 @@ var PlayaPlayer = (() => {
      * fetch()/joiningFetch() promise continuation). Buffered objects replay
      * through the same alias remap as normally-ordered fetch objects.
      */
+    /** Deliver a CMAF or LOCMAF object through its track's warm-start head ordering. */
+    orderWarmStartHead(trackName, obj, deliver) {
+      const head = this.warmStartHeads.get(trackName);
+      if (!head) {
+        deliver(obj);
+        return;
+      }
+      let headOpen = false;
+      for (const fetch2 of this.activeFetches.values()) {
+        if (fetch2.warmStart && fetch2.trackName === trackName)
+          headOpen = true;
+      }
+      const ready = head.push(obj, this.clock.now(), headOpen);
+      if (head.done && this.warmStartHeads.get(trackName) === head)
+        this.warmStartHeads.delete(trackName);
+      for (const o of ready)
+        deliver(o);
+    }
     registerMediaFetch(fetchReqId, info) {
       const refused = this.refusedFetchRequests.get(fetchReqId);
       if (refused) {
@@ -33938,6 +34039,7 @@ var PlayaPlayer = (() => {
       this.subgroupStreams.clear();
       this.pendingMediaSubs.clear();
       this.activeFetches.clear();
+      this.warmStartHeads.clear();
       this.fetchStreamAliases.clear();
       this.fetchStreamRequestIds.clear();
       this.pendingFetchStreams.clear();
@@ -34884,8 +34986,9 @@ var PlayaPlayer = (() => {
             reason: errorReason
           });
         },
-        onMediaSubscribeOk: (_requestId, _trackName, _mediaType) => {
+        onMediaSubscribeOk: (_requestId, trackName, _mediaType, largest) => {
           this._mediaSubsOk++;
+          this.warmStartHeads.get(trackName)?.setHeadGroup(largest?.group ?? null);
         },
         onMediaSubscribeError: (requestId, trackName, mediaType, reason, errorCode) => {
           this._mediaSubsFailed++;
@@ -35883,9 +35986,9 @@ var PlayaPlayer = (() => {
         const nsBytes = encodeNamespace(this.config.namespace, this.enc);
         const nameBytes = this.enc.encode(name);
         const track = mediaType === "video" ? selected.video : selected.audio;
-        const warmStart = this.config.warmStartCurrentGroup === true && track?.isLive === true && !isMsePackaging(packaging);
-        if (this.config.warmStartCurrentGroup === true && isMsePackaging(packaging)) {
-          this.log.warn('[warm-start] CMAF track "%s" skipped \u2014 LOC only in this slice', name);
+        const warmStart = this.config.warmStartCurrentGroup === true && track?.isLive === true;
+        if (warmStart && isMsePackaging(packaging)) {
+          this.warmStartHeads.set(name, new WarmStartHead(this.clock.now()));
         }
         const warmFill = warmStart && isDraft22(conn.draftVersion);
         const mediaOptions = warmStart ? {
