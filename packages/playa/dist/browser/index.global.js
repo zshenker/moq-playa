@@ -22592,7 +22592,7 @@ var PlayaPlayer = (() => {
   }
 
   // ../playback/dist/pipeline.js
-  var PlaybackPipeline = class {
+  var PlaybackPipeline = class _PlaybackPipeline {
     mediaType;
     clock;
     sync;
@@ -22614,6 +22614,12 @@ var PlayaPlayer = (() => {
     endedGroups = /* @__PURE__ */ new Set();
     /** Timestamp when we first started waiting for active group completion. */
     activeGroupWaitStartUs = null;
+    /** Whether a fetch delivering a group's head (fill or Joining FETCH) is still open. */
+    headPending = null;
+    /** End of the one wait allowed for a pending head; set when the wait starts. */
+    headWaitDeadlineUs = null;
+    /** Longest total wait for a pending head before holes abandon groups again. */
+    static HEAD_WAIT_MAX_US = 1e6;
     /**
     * Minimum group ID accepted by pushObject().
     * Set after SKIP_FORWARD to reject stale objects from pre-skip groups
@@ -22677,6 +22683,19 @@ var PlayaPlayer = (() => {
     */
     setCodec(codec) {
       this._videoCodec = codec;
+    }
+    /**
+     * Report whether a fetch delivering a group's head is still open.
+     *
+     * A fill (draft-22 §3.4) or Joining FETCH (§9.16.2) carries the start of
+     * the current group on its own stream while the subscription carries the
+     * rest, so the live tail can arrive before the head. While the probe
+     * returns true, a video hole within a group waits for the missing objects
+     * (one second in total) instead of abandoning the group, and arrival
+     * timing is kept out of the jitter estimate: the head arrives as a burst.
+     */
+    setHeadPendingProbe(probe) {
+      this.headPending = probe;
     }
     /**
     * Current effective gap timeout in microseconds.
@@ -22798,7 +22817,7 @@ var PlayaPlayer = (() => {
           action: this.recovery.evaluate({ type: "buffer_overflow" })
         });
       }
-      if (this.adaptiveTolerance && headers?.captureTimestamp !== void 0) {
+      if (this.adaptiveTolerance && headers?.captureTimestamp !== void 0 && this.headPending?.() !== true) {
         const nowMs = this.clock.now() / 1e3;
         const captureUs = Number(headers.captureTimestamp);
         this.adaptiveTolerance.onFrameArrived(nowMs, captureUs, nowMs);
@@ -22845,6 +22864,7 @@ var PlayaPlayer = (() => {
       this.lastKeyframeWaitingGroupId = -1n;
       this._throttled = false;
       this.activeGroupWaitStartUs = null;
+      this.headWaitDeadlineUs = null;
       this.gapDetector.reset();
       const decision = this.decoderState.notifyGap();
       this.emitFsmDecision(decision);
@@ -22862,6 +22882,7 @@ var PlayaPlayer = (() => {
       this._trackEnded = false;
       this.endedGroups.clear();
       this.activeGroupWaitStartUs = null;
+      this.headWaitDeadlineUs = null;
       this.gapDetector.reset();
       this.adaptiveTolerance?.reset();
       const decision = this.decoderState.notifyGap();
@@ -22882,6 +22903,8 @@ var PlayaPlayer = (() => {
       if (this.resetPending && this.buffer.size > 0) {
         const top = this.buffer.peek();
         if (top.objectId !== 0n) {
+          if (this.waitingForHead())
+            return;
           this.buffer.extract();
           this.decrementGroupCount(top.groupId);
           return;
@@ -22982,6 +23005,8 @@ var PlayaPlayer = (() => {
           this.nextExpectedObjectId = 0n;
         }
         if (this.mediaType === "video" && top.objectId > this.nextExpectedObjectId) {
+          if (this.waitingForHead())
+            break;
           const skipGroupId = top.groupId;
           while (this.buffer.size > 0) {
             const peek = this.buffer.peek();
@@ -23009,6 +23034,14 @@ var PlayaPlayer = (() => {
       }
     }
     // ─── Internal ───────────────────────────────────────────────────
+    /** Whether to keep waiting for a group head still in flight on a fetch stream. */
+    waitingForHead() {
+      if (this.headPending?.() !== true)
+        return false;
+      const now = this.clock.now();
+      this.headWaitDeadlineUs ??= now + _PlaybackPipeline.HEAD_WAIT_MAX_US;
+      return now < this.headWaitDeadlineUs;
+    }
     /**
     * Drop oldest whole groups when backlog exceeds maxBacklogGroups.
     * Keeps the newest maxBacklogGroups groups, discards the rest.
@@ -35396,6 +35429,13 @@ var PlayaPlayer = (() => {
         }
       }, this._handshakeRttMs);
       this.videoPipeline = pipelines.videoPipeline;
+      this.videoPipeline?.setHeadPendingProbe(() => {
+        for (const fetch2 of this.activeFetches.values()) {
+          if (fetch2.warmStart && fetch2.mediaType === "video")
+            return true;
+        }
+        return false;
+      });
       this.audioPipeline = pipelines.audioPipeline;
       this.syncController = pipelines.syncController;
       this.recoveryController = pipelines.recoveryController;
