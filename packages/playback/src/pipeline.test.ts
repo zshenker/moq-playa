@@ -2112,3 +2112,59 @@ describe('PlaybackPipeline — LOC-04 Audio Config', () => {
         expect(commands.filter(c => c.type === 'configure')).toHaveLength(0);
     });
 });
+
+describe('PlaybackPipeline — group head on a fetch stream', () => {
+    function startGroup(headPending: boolean) {
+        const clock = new MockClock();
+        clock.set(5_000_000);
+        const { pipeline, commands, sync } = createPipeline({ mediaType: 'video', clock });
+        sync.setAudioReference(1_000_000_000n);
+        pipeline.setHeadPendingProbe(() => headPending);
+        pipeline.pushObject(makeData(0, 0), videoHeaders(1_000_000_000n, true, new Uint8Array([0x01])));
+        pipeline.tick();
+        // The live tail overtakes the rest of the head.
+        pipeline.pushObject(makeData(0, 3), videoHeaders(1_000_100_000n, false));
+        pipeline.tick();
+        return { clock, pipeline, commands };
+    }
+    const decodes = (commands: DecoderCommand[]) => commands.filter(c => c.type === 'decode_video').length;
+
+    it('waits for the missing objects while the head fetch is open', () => {
+        const { pipeline, commands } = startGroup(true);
+        expect(commands.some(c => c.type === 'reset')).toBe(false);
+        pipeline.pushObject(makeData(0, 1), videoHeaders(1_000_033_333n, false));
+        pipeline.pushObject(makeData(0, 2), videoHeaders(1_000_066_666n, false));
+        pipeline.tick();
+        expect(decodes(commands)).toBe(4);
+        expect(commands.some(c => c.type === 'reset')).toBe(false);
+    });
+
+    it('abandons the group at once when no head fetch is open', () => {
+        const { commands } = startGroup(false);
+        expect(decodes(commands)).toBe(1);
+        expect(commands.some(c => c.type === 'reset')).toBe(true);
+    });
+
+    it.each([true, false])('keeps a live object that beats the head keyframe only while the fetch is open (%s)', (headPending) => {
+        const clock = new MockClock();
+        clock.set(5_000_000);
+        const { pipeline, commands, sync } = createPipeline({ mediaType: 'video', clock });
+        sync.setAudioReference(1_000_000_000n);
+        pipeline.setHeadPendingProbe(() => headPending);
+        pipeline.pushObject(makeData(0, 3), videoHeaders(1_000_100_000n, false));
+        pipeline.tick();
+        pipeline.pushObject(makeData(0, 0), videoHeaders(1_000_000_000n, true, new Uint8Array([0x01])));
+        pipeline.pushObject(makeData(0, 1), videoHeaders(1_000_033_333n, false));
+        pipeline.pushObject(makeData(0, 2), videoHeaders(1_000_066_666n, false));
+        pipeline.tick();
+        expect(decodes(commands)).toBe(headPending ? 4 : 3);
+    });
+
+    it('abandons the group after waiting one second for the head', () => {
+        const { clock, pipeline, commands } = startGroup(true);
+        clock.advance(1_000_000);
+        pipeline.tick();
+        expect(decodes(commands)).toBe(1);
+        expect(commands.some(c => c.type === 'reset')).toBe(true);
+    });
+});

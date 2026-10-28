@@ -7527,6 +7527,14 @@ export class MoqtPlayer {
     // configurePipelines() because configure() triggers onCommand
     // synchronously, which needs this.commandDispatcher.
     this.videoPipeline = pipelines.videoPipeline;
+    // A warm-start fill or Joining FETCH delivers the current group's head
+    // beside the live tail; holes in that group wait for it while it is open.
+    this.videoPipeline?.setHeadPendingProbe(() => {
+      for (const fetch of this.activeFetches.values()) {
+        if (fetch.warmStart && fetch.mediaType === 'video') return true;
+      }
+      return false;
+    });
     this.audioPipeline = pipelines.audioPipeline;
     this.syncController = pipelines.syncController;
     this.recoveryController = pipelines.recoveryController;
