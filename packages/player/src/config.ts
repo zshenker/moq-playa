@@ -298,18 +298,19 @@ export interface PlaybackTuningConfig {
 
   /**
    * Warm-start the current group at initial tune-in (§5.1.3 "Joining an
-   * Ongoing Track"): live LOC media tracks subscribe with the Largest Object
-   * filter and immediately issue a relative Joining FETCH (Joining Start 0,
-   * §9.16.2 / draft-18 §10.12.2) referencing the SUBSCRIBE, so the current
+   * Ongoing Track"): live media tracks subscribe with the Largest Object
+   * filter and request the current group's head — a fill on draft 22 (§3.4),
+   * otherwise a relative Joining FETCH (Joining Start 0, §9.16.2 / draft-18
+   * §10.12.2) referencing the SUBSCRIBE — so the current
    * group's head plays immediately instead of waiting for the next group
    * boundary. The FETCH and the live subscription are contiguous and
    * non-overlapping by construction (§9.16.2.1).
    *
-   * Scope: initial tune-in only (never ABR switches), live LOC tracks only —
-   * CMAF tracks keep their normal boundary start (MSE append ordering is not
-   * warm-start safe yet) and non-live tracks already start from group 0. A
-   * refused FETCH is non-fatal: playback continues live-only from the next
-   * group boundary.
+   * Scope: initial tune-in only (never ABR switches), live tracks only —
+   * non-live tracks already start from group 0. On CMAF and LOCMAF tracks
+   * the head group's objects are put in order before they reach MSE, since
+   * the live tail can arrive first. A refused FETCH is non-fatal: playback
+   * continues live-only from the next group boundary.
    *
    * Default: off. Incompatible with an explicit `subscriptionFilter` other
    * than `'LargestObject'` — draft-16 §9.16.2 closes the session when a
