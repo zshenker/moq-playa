@@ -11,7 +11,7 @@
  *   - INITIAL TUNE-IN ONLY: the ABR switch path (selectVideoTrack) never
  *     issues a joining FETCH.
  *   - FETCH failure is non-fatal: warn + clean up + live-only.
- *   - CMAF and non-live tracks are skipped (LOC-only slice).
+ *   - Non-live tracks are skipped; CMAF and LOCMAF warm-start with head ordering.
  *   - Default behavior (warm start off) keeps NextGroupStart untouched.
  *
  * @module
@@ -23,7 +23,7 @@ import { PlayerState } from './state.js';
 import type { MoqtPlayerConfig } from './config.js';
 import type { MoqtConnection } from '@openmoq/webtransport';
 import type { ControlMessage, MoqtObject } from '@openmoq/transport';
-import { varint } from '@openmoq/transport';
+import { varint, MessageParam } from '@openmoq/transport';
 import type { DataStreamTerminal } from '@openmoq/webtransport';
 
 // ─── Mock adapter (thin copy of the player.test.ts harness) ──────────
@@ -133,7 +133,7 @@ async function bootPlayer(
 
 // ─── Tests ───────────────────────────────────────────────────────────
 
-describe('warm start ON (warmStartCurrentGroup: true, live LOC)', () => {
+describe('warm start ON (warmStartCurrentGroup: true, live tracks)', () => {
   it('media subscribes use the Largest Object filter and each gets a relative joining FETCH (joiningStart 0)', async () => {
     const { player, adapter, subscribeCalls, reqIdFor } = await bootPlayer(
       locCatalog([VIDEO_LOC, AUDIO_LOC]), { warmStartCurrentGroup: true });
@@ -233,7 +233,7 @@ describe('warm start ON (warmStartCurrentGroup: true, live LOC)', () => {
     await player.destroy();
   });
 
-  it('CMAF tracks are skipped (LOC-only slice): no joining FETCH, NextGroupStart preserved', async () => {
+  it('CMAF tracks warm-start too: Largest Object filter and a joining FETCH', async () => {
     const cmafCatalog = locCatalog([
       { name: 'video', packaging: 'cmaf', isLive: true, role: 'video', renderGroup: 1,
         codec: 'avc1.4D4028', width: 1280, height: 720, bitrate: 2_500_000 },
@@ -241,13 +241,13 @@ describe('warm start ON (warmStartCurrentGroup: true, live LOC)', () => {
     const { player, adapter, subscribeCalls } = await bootPlayer(
       cmafCatalog, { warmStartCurrentGroup: true });
 
-    expect(adapter.joiningFetch).not.toHaveBeenCalled();
+    expect(adapter.joiningFetch).toHaveBeenCalledTimes(1);
     const call = subscribeCalls().find(([n]: [string, unknown]) => n === 'video');
-    expect(call![1]?.subscriptionFilter?.type).toBe('NextGroupStart');
+    expect(call![1]?.subscriptionFilter?.type).toBe('LargestObject');
     await player.destroy();
   });
 
-  it('LOCMAF tracks are skipped like CMAF (MSE path): no joining FETCH, NextGroupStart preserved', async () => {
+  it('LOCMAF tracks warm-start too: Largest Object filter and a joining FETCH', async () => {
     const locmafCatalog = locCatalog([
       { name: 'video', packaging: 'locmaf', locmafVersion: '0.3', isLive: true, role: 'video', renderGroup: 1,
         codec: 'avc1.4D4028', width: 1280, height: 720, bitrate: 2_500_000 },
@@ -255,9 +255,9 @@ describe('warm start ON (warmStartCurrentGroup: true, live LOC)', () => {
     const { player, adapter, subscribeCalls } = await bootPlayer(
       locmafCatalog, { warmStartCurrentGroup: true });
 
-    expect(adapter.joiningFetch).not.toHaveBeenCalled();
+    expect(adapter.joiningFetch).toHaveBeenCalledTimes(1);
     const call = subscribeCalls().find(([n]: [string, unknown]) => n === 'video');
-    expect(call![1]?.subscriptionFilter?.type).toBe('NextGroupStart');
+    expect(call![1]?.subscriptionFilter?.type).toBe('LargestObject');
     await player.destroy();
   });
 
@@ -722,6 +722,44 @@ describe('warm start OFF (default)', () => {
       const call = subscribeCalls().find(([n]: [string, unknown]) => n === name);
       expect(call![1]?.subscriptionFilter?.type).toBe('NextGroupStart');
     }
+    await player.destroy();
+  });
+});
+
+describe('warm start — CMAF/LOCMAF head ordering', () => {
+  const VIDEO_LOCMAF = {
+    name: 'video', packaging: 'locmaf', locmafVersion: '0.3', isLive: true, role: 'video', renderGroup: 1,
+    codec: 'avc1.4D4028', width: 1280, height: 720, bitrate: 2_500_000,
+  };
+  const object = (alias: bigint, group: number, objectId: number): MoqtObject => ({
+    kind: 'data', trackAlias: varint(alias), groupId: varint(group), subgroupId: varint(0),
+    objectId: varint(objectId), payload: new Uint8Array([objectId]),
+  } as MoqtObject);
+
+  it('delivers the joining FETCH head ahead of a live tail that arrived first', async () => {
+    const { player, adapter, reqIdFor } = await bootPlayer(
+      locCatalog([VIDEO_LOCMAF]), { warmStartCurrentGroup: true });
+    const delivered: string[] = [];
+    vi.spyOn(player as any, 'onLocmafMediaObject').mockImplementation(
+      (...args: unknown[]) => { const o = args[2] as MoqtObject; delivered.push(`${o.groupId}:${o.objectId}`); });
+    const videoReqId = (await reqIdFor('video'))!;
+    const fetchReqId = BigInt(await adapter.joiningFetch.mock.results[0]?.value);
+    adapter._triggerMessage({
+      type: 'SUBSCRIBE_OK', requestId: varint(videoReqId), trackAlias: varint(videoReqId),
+      parameters: new Map([[MessageParam.LARGEST_OBJECT, [{ group: 5n, object: 1n }]]]),
+    } as unknown as ControlMessage);
+    await new Promise((r) => setTimeout(r, 10));
+
+    // The live tail (object 2 onward) overtakes the head on the FETCH stream.
+    adapter._triggerObject(80n, object(videoReqId, 5, 2));
+    adapter._triggerDataStream(81n, { type: 'fetch', header: { requestId: varint(fetchReqId) } });
+    adapter._triggerObject(81n, object(0n, 5, 0));
+    adapter._triggerObject(81n, object(0n, 5, 1));
+    adapter._triggerStreamClosed(81n);
+    adapter._triggerObject(80n, object(videoReqId, 5, 3));
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(delivered).toEqual(['5:0', '5:1', '5:2', '5:3']);
     await player.destroy();
   });
 });

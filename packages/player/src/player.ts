@@ -27,6 +27,7 @@ import type { CatalogObjectEvent, PublishDoneReason } from './catalog-bootstrap.
 import { MoqtConnectionError } from '@openmoq/webtransport';
 import type { DataStreamTerminal, GoawayNotice, MoqtConnection, WebTransportLike, MoqtConnectionErrorSource } from '@openmoq/webtransport';
 import type { MoqtObject, ObjectDatagram, SubgroupHeader } from '@openmoq/transport';
+import { WarmStartHead } from './warm-start-head.js';
 import { getSubgroupIdMode, SubgroupIdMode } from '@openmoq/transport';
 import { PlaybackPipeline, SyncController, BandwidthEstimator } from '@openmoq/playback';
 import { BufferBasedController } from '@openmoq/playback';
@@ -829,6 +830,9 @@ export class MoqtPlayer {
     bigint,
     { trackName: string; mediaType: 'video' | 'audio'; subscriptionRequestId: bigint | null; trackAlias: bigint | null; warmStart?: boolean }
   >();
+
+  /** Warm-start head ordering for CMAF and LOCMAF tracks, by track name. */
+  private readonly warmStartHeads = new Map<string, WarmStartHead>();
 
   /**
    * Pending TRACK_STATUS queries: requestId → { resolve, reject }.
@@ -2564,12 +2568,12 @@ export class MoqtPlayer {
     // Wire LOCMAF object delivery → reconstruction into CMAF chunks → assembler.
     // @see draft-einarsson-moq-locmaf-01 §15, §16
     this.subscriptionManager.onLocmafObject = (mediaType, trackName, obj) => {
-      this.onLocmafMediaObject(mediaType, trackName, obj);
+      this.orderWarmStartHead(trackName, obj, (o) => this.onLocmafMediaObject(mediaType, trackName, o));
     };
 
     // Wire CMAF object delivery → MediaSource adapter (pipeline bypass)
     // §3.3: CMAF objects are moof or mdat — concatenate then feed to MSE
-    this.subscriptionManager.onCmafObject = (mediaType, trackName, obj) => {
+    const deliverCmafObject = (mediaType: 'video' | 'audio', trackName: string, obj: MoqtObject): void => {
       // Liveness: stamp before every early return (gates, staging, drops).
       this.stampMediaArrival(BigInt(obj.trackAlias));
 
@@ -2687,6 +2691,9 @@ export class MoqtPlayer {
 
       // Feed through assembler: pairs moof+mdat per group, patches tfdt, emits segments.
       this.cmafAssembler?.push(mediaType, trackName, groupId, obj.payload);
+    };
+    this.subscriptionManager.onCmafObject = (mediaType, trackName, obj) => {
+      this.orderWarmStartHead(trackName, obj, (o) => deliverCmafObject(mediaType, trackName, o));
     };
 
     // §2.4.2: Malformed Track — MUST UNSUBSCRIBE, SHOULD deliver error
@@ -3642,6 +3649,7 @@ export class MoqtPlayer {
     // fetchCatalog promises — their request IDs/stream IDs belong to the old
     // adapter and won't match new-session traffic.
     this.activeFetches.clear();
+    this.warmStartHeads.clear();
     this.fetchStreamAliases.clear();
     this.fetchStreamRequestIds.clear();
     this.pendingFetchStreams.clear();
@@ -3828,6 +3836,22 @@ export class MoqtPlayer {
    * fetch()/joiningFetch() promise continuation). Buffered objects replay
    * through the same alias remap as normally-ordered fetch objects.
    */
+  /** Deliver a CMAF or LOCMAF object through its track's warm-start head ordering. */
+  private orderWarmStartHead(trackName: string, obj: MoqtObject, deliver: (obj: MoqtObject) => void): void {
+    const head = this.warmStartHeads.get(trackName);
+    if (!head) {
+      deliver(obj);
+      return;
+    }
+    let headOpen = false;
+    for (const fetch of this.activeFetches.values()) {
+      if (fetch.warmStart && fetch.trackName === trackName) headOpen = true;
+    }
+    const ready = head.push(obj, this.clock.now(), headOpen);
+    if (head.done && this.warmStartHeads.get(trackName) === head) this.warmStartHeads.delete(trackName);
+    for (const o of ready) deliver(o);
+  }
+
   private registerMediaFetch(
     fetchReqId: bigint,
     info: { trackName: string; mediaType: 'video' | 'audio'; subscriptionRequestId: bigint | null; trackAlias: bigint | null; warmStart?: boolean },
@@ -5560,6 +5584,7 @@ export class MoqtPlayer {
     this.subgroupStreams.clear();
     this.pendingMediaSubs.clear();
     this.activeFetches.clear();
+    this.warmStartHeads.clear();
     this.fetchStreamAliases.clear();
     this.fetchStreamRequestIds.clear();
     this.pendingFetchStreams.clear();
@@ -6861,8 +6886,10 @@ export class MoqtPlayer {
           reason: errorReason,
         });
       },
-      onMediaSubscribeOk: (_requestId, _trackName, _mediaType) => {
+      onMediaSubscribeOk: (_requestId, trackName, _mediaType, largest) => {
         this._mediaSubsOk++;
+        // The fill or Joining FETCH covers the Largest Object's group.
+        this.warmStartHeads.get(trackName)?.setHeadGroup(largest?.group ?? null);
       },
       onMediaSubscribeError: (requestId, trackName, mediaType, reason, errorCode) => {
         this._mediaSubsFailed++;
@@ -8108,17 +8135,16 @@ export class MoqtPlayer {
       // Non-live/VOD defaults to AbsoluteStart {0,0} (start from beginning).
       const track = mediaType === 'video' ? selected.video : selected.audio;
 
-      // Warm start (§5.1.3): a live LOC track subscribes with the Largest
-      // Object filter so a relative Joining FETCH can prepend the current
-      // group's head (issued below). CMAF is excluded — its MSE append path
-      // is not warm-start safe (see cmafBootstrap notes) — and non-live
-      // tracks already start from group 0. Config validation guarantees any
-      // explicit subscriptionFilter is LargestObject when warm start is on.
+      // Warm start (§5.1.3): a live track subscribes with the Largest Object
+      // filter so a fill or relative Joining FETCH can prepend the current
+      // group's head (issued below). Non-live tracks already start from
+      // group 0. Config validation guarantees any explicit subscriptionFilter
+      // is LargestObject when warm start is on.
       const warmStart = this.config.warmStartCurrentGroup === true
-        && track?.isLive === true
-        && !isMsePackaging(packaging);
-      if (this.config.warmStartCurrentGroup === true && isMsePackaging(packaging)) {
-        this.log.warn('[warm-start] CMAF track "%s" skipped — LOC only in this slice', name);
+        && track?.isLive === true;
+      // CMAF and LOCMAF need the head group in order (see WarmStartHead).
+      if (warmStart && isMsePackaging(packaging)) {
+        this.warmStartHeads.set(name, new WarmStartHead(this.clock.now()));
       }
       // Warm start overrides ONLY the filter — configured subscribe options
       // (deliveryTimeout, subscriberPriority, groupOrder) are preserved.
