@@ -107,6 +107,14 @@ vi.mock('@openmoq/player', async (importOriginal) => {
 // Import AFTER mocks are set up
 const { Player } = await import('./player.js');
 
+describe('Player — stats', () => {
+  it('reports the engine live latency', () => {
+    const p = new Player(mockElement() as HTMLElement, { url: 'x', namespace: 'y' });
+    (p as unknown as { engine: { stats: object } }).engine.stats = { currentLatencyMs: 420 };
+    expect(p.stats.latencyMs).toBe(420);
+  });
+});
+
 describe('Player — audio activation', () => {
   beforeEach(() => {
     audioContextConstructorCalls = 0;

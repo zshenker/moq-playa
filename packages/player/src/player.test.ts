@@ -6670,6 +6670,13 @@ describe('MoqtPlayer', () => {
       expect(player.stats.currentLatencyMs).toBe(0);
     });
 
+    it('currentLatencyMs reports the last measured latency without a catch-up change', () => {
+      const adapter = createMockAdapter();
+      const player = new MoqtPlayer(createConfig(adapter));
+      (player as any).syncController = { latencyUs: 250_000 };
+      expect(player.stats.currentLatencyMs).toBe(250);
+    });
+
     it('catchUpRecoveryMs default is 50 in merged config', () => {
       const adapter = createMockAdapter();
       const player = new MoqtPlayer(createConfig(adapter));
@@ -9868,6 +9875,37 @@ describe('MoqtPlayer', () => {
         getBufferAheadUs: vi.fn(() => bufferAheadUs),
       };
     }
+
+    it('stats report the media element frame counters for MSE video', async () => {
+      const adapter = createMockAdapter();
+      const ms = { ...createMockMediaSource(), getVideoFrameCounts: vi.fn(() => ({ decoded: 300, dropped: 3 })) };
+      const player = new MoqtPlayer({
+        url: 'https://relay.example.com/moq',
+        namespace: 'live/broadcast',
+        createTransport: vi.fn(async () => ({}) as any),
+        createConnection: () => adapter as unknown as MoqtConnection,
+        catalogBootstrap: 'subscribe',
+        createMediaSource: () => ms as any,
+        createCmafAssembler: () => ({ push: vi.fn(), setInitSegment: vi.fn(), destroy: vi.fn() }) as any,
+      });
+
+      const loadPromise = player.load();
+      await resolveConnect(adapter);
+      await loadPromise;
+      ackCatalog(adapter);
+      adapter._triggerObject(0n, {
+        kind: 'data',
+        trackAlias: varint(1),
+        groupId: varint(0),
+        subgroupId: varint(0),
+        objectId: varint(0),
+        payload: new TextEncoder().encode(CMAF_ABR_CATALOG),
+      } as MoqtObject);
+      await new Promise(r => setTimeout(r, 0));
+
+      expect(player.stats).toMatchObject({ framesDecoded: 300, framesDropped: 3, framesRendered: 297, dropRatio: 0.01 });
+      await player.destroy();
+    });
 
     it('does NOT downshift during startup when buffer signal is null', async () => {
       const adapter = createMockAdapter();

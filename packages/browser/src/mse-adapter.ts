@@ -1273,6 +1273,12 @@ export class MseMediaSource implements MediaSourceLike {
     }
   }
 
+  getVideoFrameCounts(): { decoded: number; dropped: number } | null {
+    if (!this.videoBuffer) return null;
+    const q = (this.video as { getVideoPlaybackQuality?: () => VideoPlaybackQuality }).getVideoPlaybackQuality?.();
+    return q ? { decoded: q.totalVideoFrames, dropped: q.droppedVideoFrames } : null;
+  }
+
   getBufferAheadUs(): number | null {
     const v = this.video;
     if (!v.buffered.length) {

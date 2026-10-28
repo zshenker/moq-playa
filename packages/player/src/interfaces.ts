@@ -329,6 +329,13 @@ export interface MediaSourceLike {
   getBufferAheadUs?(): number | null;
 
   /**
+   * Video frame counters from the media element when this source renders
+   * the video (MSE `getVideoPlaybackQuality()`); null when it carries no
+   * video or the element does not report them.
+   */
+  getVideoFrameCounts?(): { decoded: number; dropped: number } | null;
+
+  /**
    * Whether the media element has attached the MediaSource (MSE
    * `sourceopen`), i.e. SourceBuffers exist and appendChunk() can take
    * effect. Browsers defer that attachment while the document is hidden

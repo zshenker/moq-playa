@@ -1148,7 +1148,22 @@ export class MoqtPlayer {
       videoEffectiveGapTimeoutMs: gapUs / 1000, // raw adaptive fuse
       renderCushionMs: (this.getRenderCushionUs?.() ?? computePlaybackDelayUs(gapUs, this._handshakeRttMs)) / 1000,
     } : undefined;
-    return Object.freeze(this._stats.snapshot(locGauges));
+    const snapshot = this._stats.snapshot(locGauges);
+    // The sync controller measures latency from every CaptureTimestamp;
+    // catch_up_changed only reports it when the catch-up rate changes.
+    const latencyUs = this.syncController?.latencyUs ?? 0;
+    const live = latencyUs > 0 ? { ...snapshot, currentLatencyMs: latencyUs / 1000 } : snapshot;
+    // Video rendered through MSE never passes the WebCodecs counters; the
+    // media element counts it instead.
+    const frames = this.mediaSource?.getVideoFrameCounts?.();
+    if (!frames) return Object.freeze(live);
+    return Object.freeze({
+      ...live,
+      framesDecoded: frames.decoded,
+      framesDropped: frames.dropped,
+      framesRendered: frames.decoded - frames.dropped,
+      dropRatio: frames.decoded > 0 ? frames.dropped / frames.decoded : 0,
+    });
   }
 
   /**
