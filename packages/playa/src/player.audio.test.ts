@@ -107,6 +107,14 @@ vi.mock('@openmoq/player', async (importOriginal) => {
 // Import AFTER mocks are set up
 const { Player } = await import('./player.js');
 
+describe('Player — stats', () => {
+  it('reports the engine live latency', () => {
+    const p = new Player(mockElement() as HTMLElement, { url: 'x', namespace: 'y' });
+    (p as unknown as { engine: { stats: object } }).engine.stats = { currentLatencyMs: 420 };
+    expect(p.stats.latencyMs).toBe(420);
+  });
+});
+
 describe('Player — audio activation', () => {
   beforeEach(() => {
     audioContextConstructorCalls = 0;
@@ -254,5 +262,18 @@ describe('Player — audio activation', () => {
       await result;
       expect(p.muted).toBe(false);
     });
+  });
+});
+
+describe('Player — play()', () => {
+  it('is a no-op while already playing', async () => {
+    const p = new Player(mockElement() as HTMLElement, { url: 'x', namespace: 'y' });
+    await p.load();
+    const plays: unknown[] = [];
+    p.on('play', (e) => plays.push(e));
+    p.play();
+    p.play();
+    expect(plays).toHaveLength(1);
+    expect(p.state).toBe('playing');
   });
 });

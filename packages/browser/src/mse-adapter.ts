@@ -588,7 +588,7 @@ export class MseMediaSource implements MediaSourceLike {
   private readonly videoQueue: Array<{ data: Uint8Array; trackName: string; groupId?: bigint }> = [];
   private readonly audioQueue: Array<{ data: Uint8Array; trackName: string; groupId?: bigint }> = [];
 
-  /** Per-(mediaType:trackName) committed group high-water mark. */
+  /** Per-(video:trackName) committed group high-water mark. */
   private readonly committedGroupFloor = new Map<string, bigint>();
 
   private readonly video: HTMLVideoElement;
@@ -1273,6 +1273,12 @@ export class MseMediaSource implements MediaSourceLike {
     }
   }
 
+  getVideoFrameCounts(): { decoded: number; dropped: number } | null {
+    if (!this.videoBuffer) return null;
+    const q = (this.video as { getVideoPlaybackQuality?: () => VideoPlaybackQuality }).getVideoPlaybackQuality?.();
+    return q ? { decoded: q.totalVideoFrames, dropped: q.droppedVideoFrames } : null;
+  }
+
   getBufferAheadUs(): number | null {
     const v = this.video;
     if (!v.buffered.length) {
@@ -1290,7 +1296,8 @@ export class MseMediaSource implements MediaSourceLike {
 
   /**
    * Get the committed group floor for a (mediaType, trackName) pair.
-   * Returns undefined if no group has been committed yet.
+   * Returns undefined if no group has been committed yet; audio never has
+   * one (see the commit path).
    */
   getCommittedGroupFloor(mediaType: 'video' | 'audio', trackName: string): bigint | undefined {
     return this.committedGroupFloor.get(`${mediaType}:${trackName}`);
@@ -2797,8 +2804,13 @@ export class MseMediaSource implements MediaSourceLike {
         for (const r of pending) {
           timeline.insert(r.startTime, r.endTime);
         }
-        // Advance committed group floor on successful append.
-        if (pendingGroup !== undefined) {
+        // Advance committed group floor on successful append. Video only:
+        // each group is its own stream, so the tail of group N can land
+        // after the head of N+1. A late video delta frame is undecodable
+        // behind the newer keyframe, but every audio frame is a random
+        // access point at its own decode time, so dropping a late audio
+        // tail would only cut a hole at the group boundary.
+        if (pendingGroup !== undefined && mediaType === 'video') {
           const floorKey = `${mediaType}:${pendingTrack}`;
           const existing = this.committedGroupFloor.get(floorKey);
           if (existing === undefined || pendingGroup > existing) {

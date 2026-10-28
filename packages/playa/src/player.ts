@@ -296,7 +296,7 @@ export class Player {
       framesRendered: s.framesRendered,
       framesDropped: s.framesDropped,
       bitrate: s.currentBitrate,
-      latencyMs: 0, // TODO: derive from sync controller
+      latencyMs: s.currentLatencyMs,
       stallCount: s.stallCount,
       timeToFirstFrameMs: s.timeToFirstFrameMs,
       resolution: s.currentResolution ?? null,
@@ -322,6 +322,9 @@ export class Player {
    * In 'gesture' mode, audio stays deferred until prepareAudio()/unmute().
    */
   play(): void {
+    // Idempotent while playing: autoplay and an explicit play() after load()
+    // must not race into a playing → playing transition.
+    if (this._state === 'playing') return;
     if (this.options.audioActivation !== 'gesture') {
       this.ensureAudioContext();
     }

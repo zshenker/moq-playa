@@ -1148,7 +1148,22 @@ export class MoqtPlayer {
       videoEffectiveGapTimeoutMs: gapUs / 1000, // raw adaptive fuse
       renderCushionMs: (this.getRenderCushionUs?.() ?? computePlaybackDelayUs(gapUs, this._handshakeRttMs)) / 1000,
     } : undefined;
-    return Object.freeze(this._stats.snapshot(locGauges));
+    const snapshot = this._stats.snapshot(locGauges);
+    // The sync controller measures latency from every CaptureTimestamp;
+    // catch_up_changed only reports it when the catch-up rate changes.
+    const latencyUs = this.syncController?.latencyUs ?? 0;
+    const live = latencyUs > 0 ? { ...snapshot, currentLatencyMs: latencyUs / 1000 } : snapshot;
+    // Video rendered through MSE never passes the WebCodecs counters; the
+    // media element counts it instead.
+    const frames = this.mediaSource?.getVideoFrameCounts?.();
+    if (!frames) return Object.freeze(live);
+    return Object.freeze({
+      ...live,
+      framesDecoded: frames.decoded,
+      framesDropped: frames.dropped,
+      framesRendered: frames.decoded - frames.dropped,
+      dropRatio: frames.decoded > 0 ? frames.dropped / frames.decoded : 0,
+    });
   }
 
   /**
@@ -3125,6 +3140,8 @@ export class MoqtPlayer {
    * @see draft-ietf-moq-transport-16 §9.2.2.8 (FORWARD parameter)
    */
   play(): void {
+    // Idempotent while playing, as HTMLMediaElement.play() is.
+    if (this.stateMachine.state === PlayerState.PLAYING) return;
     this.log.info('play()');
     // ONE transaction. The transition is validated first (an invalid one throws
     // having changed nothing), then state, playback intent, adapter intent and

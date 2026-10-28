@@ -473,6 +473,39 @@ describe('MseMediaSource — timeline-owned append integration', () => {
         expect(vsb.appendedPayloads.length).toBe(initCount + 2);
     });
 
+    it('appends an audio group tail that commits after the next group started', async () => {
+        // Each group is its own stream, so group 8's first fragment can be
+        // committed before group 7's last one arrives.
+        const video = new MockVideoElement();
+        const adapter = new MseMediaSource(video as unknown as HTMLVideoElement);
+        adapter.initialize({ audio: { codec: 'mp4a.40.2', initData: makeInit(1, 1024) } });
+        currentMs.open();
+        await flush();
+        const asb = currentMs.audioBuffer;
+        const initCount = asb.appendedPayloads.length;
+
+        adapter.appendChunk('audio', makeSegment({ bmd: 2048, sampleCount: 1 }), 'audio', 8n);
+        await flush();
+        adapter.appendChunk('audio', makeSegment({ bmd: 1024, sampleCount: 1 }), 'audio', 7n);
+        await flush();
+
+        expect(asb.appendedPayloads.length).toBe(initCount + 2);
+        expect(adapter.getCommittedGroupFloor('audio', 'audio')).toBeUndefined();
+    });
+
+    it('drops a video group tail that commits after the next group started', async () => {
+        const { adapter, vsb } = await makeReadyAdapter();
+        const initCount = vsb.appendedPayloads.length;
+
+        adapter.appendChunk('video', makeSegment({ bmd: 500, sampleCount: 1 }), 'track1', 8n);
+        await flush();
+        adapter.appendChunk('video', makeSegment({ bmd: 400, sampleCount: 1 }), 'track1', 7n);
+        await flush();
+
+        expect(vsb.appendedPayloads.length).toBe(initCount + 1);
+        expect(adapter.getCommittedGroupFloor('video', 'track1')).toBe(8n);
+    });
+
     it('fully-contained duplicate segment is dropped before append', async () => {
         const { adapter, vsb } = await makeReadyAdapter();
         const initCount = vsb.appendedPayloads.length;
