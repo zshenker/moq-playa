@@ -81,6 +81,13 @@ export class PlaybackPipeline {
     /** Timestamp when we first started waiting for active group completion. */
     private activeGroupWaitStartUs: number | null = null;
 
+    /** Whether a fetch delivering a group's head (fill or Joining FETCH) is still open. */
+    private headPending: (() => boolean) | null = null;
+    /** End of the one wait allowed for a pending head; set when the wait starts. */
+    private headWaitDeadlineUs: number | null = null;
+    /** Longest total wait for a pending head before holes abandon groups again. */
+    private static readonly HEAD_WAIT_MAX_US = 1_000_000;
+
     /**
  * Minimum group ID accepted by pushObject().
  * Set after SKIP_FORWARD to reject stale objects from pre-skip groups
@@ -169,6 +176,20 @@ export class PlaybackPipeline {
  */
     setCodec(codec: string): void {
         this._videoCodec = codec;
+    }
+
+    /**
+     * Report whether a fetch delivering a group's head is still open.
+     *
+     * A fill (draft-22 §3.4) or Joining FETCH (§9.16.2) carries the start of
+     * the current group on its own stream while the subscription carries the
+     * rest, so the live tail can arrive before the head. While the probe
+     * returns true, a video hole within a group waits for the missing objects
+     * (one second in total) instead of abandoning the group, and arrival
+     * timing is kept out of the jitter estimate: the head arrives as a burst.
+     */
+    setHeadPendingProbe(probe: (() => boolean) | null): void {
+        this.headPending = probe;
     }
 
     /**
@@ -335,7 +356,7 @@ export class PlaybackPipeline {
 
         // Interarrival jitter uses transit differences, so the timestamp epoch
         // cancels out. Media time is suitable here, but not for latency/catch-up.
-        if (this.adaptiveTolerance && headers?.captureTimestamp !== undefined) {
+        if (this.adaptiveTolerance && headers?.captureTimestamp !== undefined && this.headPending?.() !== true) {
             const nowMs = this.clock.now() / 1000; // µs → ms
             const captureUs = Number(headers.captureTimestamp);
             this.adaptiveTolerance.onFrameArrived(nowMs, captureUs, nowMs);
@@ -389,6 +410,7 @@ export class PlaybackPipeline {
         this.lastKeyframeWaitingGroupId = -1n;
         this._throttled = false;
         this.activeGroupWaitStartUs = null;
+        this.headWaitDeadlineUs = null;
         this.gapDetector.reset();
         // Force decoder back to NEEDS_KEYFRAME so partial-group deltas
         // from a mid-stream subscription are skipped, not decoded.
@@ -409,6 +431,7 @@ export class PlaybackPipeline {
         this._trackEnded = false;
         this.endedGroups.clear();
         this.activeGroupWaitStartUs = null;
+        this.headWaitDeadlineUs = null;
         this.gapDetector.reset();
         this.adaptiveTolerance?.reset();
         const decision = this.decoderState.notifyGap();
@@ -440,6 +463,8 @@ export class PlaybackPipeline {
             // Stale mid-group objects from the old subscription are
             // discarded by extracting + dropping them.
             if (top.objectId !== 0n) {
+                // The live tail can overtake a head still in flight on a fetch stream.
+                if (this.waitingForHead()) return;
                 this.buffer.extract();
                 this.decrementGroupCount(top.groupId);
                 return; // wait for a keyframe-starting group
@@ -609,6 +634,8 @@ export class PlaybackPipeline {
             // N+1 without N's reference produces artifacts. Audio chunks
             // are independently decodable (LOC §4.1) so gaps are harmless.
             if (this.mediaType === 'video' && top.objectId > this.nextExpectedObjectId) {
+                // The missing objects may still be in flight on a fetch stream.
+                if (this.waitingForHead()) break;
                 // Discard remaining objects in this group — they can't
                 // decode correctly without the missing reference.
                 const skipGroupId = top.groupId;
@@ -644,6 +671,14 @@ export class PlaybackPipeline {
     }
 
     // ─── Internal ───────────────────────────────────────────────────
+
+    /** Whether to keep waiting for a group head still in flight on a fetch stream. */
+    private waitingForHead(): boolean {
+        if (this.headPending?.() !== true) return false;
+        const now = this.clock.now();
+        this.headWaitDeadlineUs ??= now + PlaybackPipeline.HEAD_WAIT_MAX_US;
+        return now < this.headWaitDeadlineUs;
+    }
 
     /**
  * Drop oldest whole groups when backlog exceeds maxBacklogGroups.
