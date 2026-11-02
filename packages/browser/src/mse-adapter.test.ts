@@ -1019,6 +1019,19 @@ describe('MseMediaSource — changeType', () => {
         expect(vsb.appendedPayloads.length).toBe(initCountBefore + 1);
     });
 
+    it('keeps timestampOffset: switching-set tracks share one media timeline', async () => {
+        const { adapter, video, vsb } = await makeReadyAdapter();
+        // Playback is well under way when the switch happens.
+        (video as unknown as { currentTime: number }).currentTime = 12.5;
+        vsb.timestampOffset = 0;
+
+        await adapter.changeType('video', 'hvc1.1.6.L93.90', makeInit(1, 100));
+
+        // The assembler's shared epoch already continues the old track's
+        // decode times; adding currentTime would shift video by 12.5s.
+        expect(vsb.timestampOffset).toBe(0);
+    });
+
     it('throws if the SourceBuffer is not initialized', async () => {
         const video = new MockVideoElement();
         const adapter = new MseMediaSource(video as unknown as HTMLVideoElement);
@@ -1027,6 +1040,39 @@ describe('MseMediaSource — changeType', () => {
         await expect(
             adapter.changeType('video', 'hvc1.1.6.L93.90', makeInit(1, 100)),
         ).rejects.toThrow(/not initialized/);
+    });
+
+    it('same mime: appends the new track init without calling SourceBuffer.changeType', async () => {
+        const { adapter, vsb } = await makeReadyAdapter();
+        const initCountBefore = vsb.appendedPayloads.length;
+
+        // A rendition switch within one codec: per-track init, same mime.
+        await adapter.changeType('video', 'avc1.42c01e', makeInit(1, 200));
+
+        expect(vsb.changeTypeCalls).toEqual([]);
+        expect(vsb.appendedPayloads.length).toBe(initCountBefore + 1);
+    });
+
+    it('same mime: works where SourceBuffer.changeType is not implemented', async () => {
+        const { adapter, vsb } = await makeReadyAdapter();
+        (vsb as unknown as { changeType?: unknown }).changeType = undefined;
+        const initCountBefore = vsb.appendedPayloads.length;
+
+        await adapter.changeType('video', 'avc1.42c01e', makeInit(1, 200));
+
+        expect(vsb.appendedPayloads.length).toBe(initCountBefore + 1);
+    });
+
+    it('retypes again when switching back to the original codec', async () => {
+        const { adapter, vsb } = await makeReadyAdapter();
+
+        await adapter.changeType('video', 'hvc1.1.6.L93.90', makeInit(1, 100));
+        await adapter.changeType('video', 'avc1.42c01e', makeInit(1, 100));
+
+        expect(vsb.changeTypeCalls).toEqual([
+            'video/mp4; codecs="hvc1.1.6.L93.90"',
+            'video/mp4; codecs="avc1.42c01e"',
+        ]);
     });
 
     it('throws if the browser does not implement SourceBuffer.changeType', async () => {

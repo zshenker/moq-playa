@@ -34,8 +34,8 @@ import { BufferBasedController } from '@openmoq/playback';
 import type { ClockSource, DecoderCommand, PlaybackEvent, RecoveryAction, RecoveryController, DecoderFeedback } from '@openmoq/playback';
 import type { AltGroup, CatalogState, CatalogTrack } from '@openmoq/msf';
 import type { LocHeaders } from '@openmoq/loc';
-import { LocmafFormatError, LocmafTrackDecoder, deserializeLocmafObject, readVi64, sliceFrames, ticksToMicros, codecDescriptionFromInit, isCmafHeader, isSyncSampleFlags, readCmafChunkSamples, parseEmsgBoxes } from '@openmoq/locmaf';
-import type { EmsgEvent, LocmafEffectiveSamples, GenBox } from '@openmoq/locmaf';
+import { LocmafFormatError, LocmafTrackDecoder, deserializeLocmafObject, readVi64, sliceFrames, ticksToMicros, codecDescriptionFromInit, isCmafHeader, isSyncSampleFlags, readCmafChunkSamples, parseEmsgBoxes, parseLocmafTrackContext } from '@openmoq/locmaf';
+import type { EmsgEvent, LocmafEffectiveSamples, GenBox, LocmafTrackContext } from '@openmoq/locmaf';
 import { groupByAlt, parseSapTimeline, parseEventTimeline, CMSF_SAP_EVENT_TYPE, isTrackPackagingSupported } from '@openmoq/msf';
 
 import { TypedEmitter } from './emitter.js';
@@ -739,7 +739,16 @@ export class MoqtPlayer {
     mediaType: 'video' | 'audio';
     groupId: bigint;
     payload: Uint8Array;
+    /** First sample is a sync sample; undefined when unknown. */
+    sync?: boolean;
   }> = [];
+
+  /**
+   * Track context per CMAF switch target, for reading staged fragments'
+   * sample flags. `null` when the track's init is unavailable or not a
+   * single-track CMAF Header.
+   */
+  private readonly cmafSwitchContexts = new Map<string, LocmafTrackContext | null>();
 
   /** Timeout for keyframe arrival during make-before-break switch. */
   private switchStagingTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -1360,7 +1369,7 @@ export class MoqtPlayer {
     // Make-before-break: stage the new track's chunks until a sync chunk, as for CMAF.
     if (this.pendingVideoSwitch && mediaType === 'video'
         && trackName === this.pendingVideoSwitch.newTrackName) {
-      this.cmafSwitchStagingBuffer.push({ trackName, mediaType, groupId, payload: decoded.bytes });
+      this.cmafSwitchStagingBuffer.push({ trackName, mediaType, groupId, payload: decoded.bytes, sync: decoded.sync });
       if (this.switchStagingTimeout === null) {
         this.switchStagingTimeout = setTimeout(() => {
           this.log.warn('[SWITCH] LOCMAF keyframe timeout — force-completing after %dms', SWITCH_STAGING_TIMEOUT_MS);
@@ -1375,6 +1384,9 @@ export class MoqtPlayer {
       }
       return;
     }
+
+    // Once the switch commits, the retired track must not reach MSE (see onCmafObject).
+    if (this.isRetiredVideoTrack(mediaType, trackName)) return;
 
     // Early stale-group drop, as for CMAF.
     if (this.mediaSource && 'getCommittedGroupFloor' in this.mediaSource) {
@@ -1491,6 +1503,39 @@ export class MoqtPlayer {
         baseMediaDecodeTime: result.baseMediaDecodeTime,
       },
     };
+  }
+
+  /** True for an old-track video object after a pending switch has started committing. */
+  private isRetiredVideoTrack(mediaType: 'video' | 'audio', trackName: string): boolean {
+    return this.switchInProgress && this.pendingVideoSwitch !== null
+      && mediaType === 'video' && trackName === this.pendingVideoSwitch.oldTrackName;
+  }
+
+  /**
+   * Whether a CMAF fragment's first sample is a sync sample, read from its
+   * trun/tfhd/trex sample flags against the track's own init. `undefined`
+   * when that cannot be determined (no init, legacy moof-only object,
+   * unreadable fragment) — callers fall back to the group-boundary rule.
+   */
+  private cmafFirstSampleSync(trackName: string, payload: Uint8Array): boolean | undefined {
+    let context = this.cmafSwitchContexts.get(trackName);
+    if (context === undefined) {
+      context = null;
+      const track = this._catalogState?.tracks.find(t => t.name === trackName);
+      try {
+        const init = track && (this.decodeResolvedInlineInitData(track)
+          ?? (track.initTrack ? this.initSegmentByTrack.get(track.initTrack) : undefined));
+        if (init) context = parseLocmafTrackContext(init);
+      } catch { /* no usable init: fall back */ }
+      this.cmafSwitchContexts.set(trackName, context);
+    }
+    if (!context) return undefined;
+    try {
+      const first = readCmafChunkSamples(payload, context).effective.flags[0];
+      return first === undefined ? undefined : isSyncSampleFlags(first);
+    } catch {
+      return undefined;
+    }
   }
 
   /** Whether a track of this packaging plays through MSE in this player (LOCMAF may take the frame path). */
@@ -1949,6 +1994,14 @@ export class MoqtPlayer {
     // A rejected selection must not change the active group's ABR policy.
     if (reason === 'manual') this.qualityController?.lockManual();
 
+    // A pending switch is either the request being repeated (no-op), or
+    // being replaced. Replace it before anything else: once a newer target
+    // is chosen, the older pending track is no longer staged, so its
+    // objects would otherwise reach the sink as ordinary media.
+    const pending = this.pendingVideoSwitch;
+    if (pending?.newTrackName === trackName) return;
+    if (pending) this.supersedePendingVideoSwitch(pending, trackName);
+
     // No-op if already on the target track
     if (currentVideoTrackName === trackName) return;
 
@@ -2002,10 +2055,13 @@ export class MoqtPlayer {
         }
       }
       // Inline init bytes — nothing to await.
-    } else if (targetTrack.packaging === 'locmaf' && targetTrack.initTrack) {
+    } else if ((targetTrack.packaging === 'locmaf' || this.usesMse(targetTrack.packaging))
+        && targetTrack.initTrack) {
       // LOCMAF reconstructs against the target's OWN CMAF Header (track_ID,
-      // timescale, trex defaults feed durations and decode times), so even a
-      // same-codec switch needs that header in hand before its objects arrive.
+      // timescale, trex defaults feed durations and decode times), and an
+      // MSE SourceBuffer must receive the target's own init before its media
+      // (completePendingVideoSwitch), so even a same-codec switch needs that
+      // header in hand before its objects arrive.
       // @see draft-einarsson-moq-locmaf-01 §6, §15.1
       let inlineInit: Uint8Array | undefined;
       try {
@@ -2014,7 +2070,7 @@ export class MoqtPlayer {
         throw new Error(`Cannot switch to "${trackName}": ${err instanceof Error ? err.message : String(err)}`);
       }
       if (!inlineInit) {
-        this.log.info('[SWITCH] locmaf "%s" → "%s": prefetching CMAF Header from init track "%s"',
+        this.log.info('[SWITCH] "%s" → "%s": prefetching CMAF Header from init track "%s"',
           currentVideoTrackName, trackName, targetTrack.initTrack);
         await this.ensureInitTrack(targetTrack.initTrack);
       }
@@ -2070,6 +2126,21 @@ export class MoqtPlayer {
     }
 
     if (!this.subscriptionManager) return; // destroyed during await
+
+    // Another selection may have started a switch while this one awaited
+    // its init prefetch or SUBSCRIBE; the latest request wins.
+    const raced = this.pendingVideoSwitch;
+    if (raced) {
+      try {
+        this.supersedePendingVideoSwitch(raced, trackName);
+      } catch (err) {
+        if (this.connection) {
+          this.retireMediaSubscription(reqIdBigInt, this.connection);
+          try { this.connection.unsubscribe(varint(reqIdBigInt)); } catch { /* ignore */ }
+        }
+        throw err;
+      }
+    }
 
     this.log.info('[SWITCH] start: "%s" → "%s" (newReqId=%s, oldReqId=%s)',
       currentVideoTrackName, trackName, reqIdBigInt, currentVideoRequestId);
@@ -2133,6 +2204,7 @@ export class MoqtPlayer {
       this.switchInProgress = false;
       this.switchStagingBuffer = [];
       this.cmafSwitchStagingBuffer = [];
+      this.cmafSwitchContexts.clear();
       return;
     }
 
@@ -2140,24 +2212,30 @@ export class MoqtPlayer {
       (t: CatalogTrack) => t.name === sw.newTrackName && t.role === 'video',
     );
 
-    // CMAF path: if the new track has a different codec than the
-    // SourceBuffer was created with, ask the adapter to retype it
-    // BEFORE the old track is unsubscribed. If the retype fails (or
-    // the init bytes are missing), the switch is aborted cleanly
-    // — old track keeps playing, new track is unsubscribed, staged
-    // bytes are dropped — and the user sees an error event. Without
-    // this, a failed pivot tears down the only known-good subscription
-    // and strands playback in an unrecoverable state.
-    const needsChangeType = newTrack !== undefined && this.usesMse(newTrack.packaging)
-      && newTrack.codec !== undefined
+    // MSE path: every track in a switching set has its own init segment
+    // (track_ID, sample entry with its own SPS/PPS, trex defaults), so the
+    // new track's media is only parseable once that init has been appended
+    // — even when the codec string matches. Ask the adapter to re-initialize
+    // the SourceBuffer (with `changeType()` when the codec differs) BEFORE
+    // the old track is unsubscribed. If that fails (or the init bytes are
+    // missing for a codec change), the switch is aborted cleanly — old
+    // track keeps playing, new track is unsubscribed, staged bytes are
+    // dropped — and the user sees an error event. Without this, a failed
+    // pivot tears down the only known-good subscription and strands
+    // playback in an unrecoverable state.
+    // @see ISO/IEC 23000-19 §7.3.4 (CMAF switching sets: per-track headers)
+    // @see https://www.w3.org/TR/media-source-2/#sourcebuffer-init-segment-received
+    const reinitMse = newTrack !== undefined && this.usesMse(newTrack.packaging)
+      && newTrack.codec !== undefined;
+    const needsChangeType = reinitMse && newTrack !== undefined
       && (this.currentVideoCodec === null
-          || !codecsCompatible(newTrack.codec, this.currentVideoCodec));
+          || !codecsCompatible(newTrack.codec!, this.currentVideoCodec));
 
-    if (needsChangeType && newTrack && this.mediaSource?.changeType) {
-      // Inline init (`initData` or an `initRef` → root inline entry) is Base64
-      // (CatalogTrack §5.1.20 / MSF-01 §5.1.7); decode it. initTrack-delivered
-      // cache holds raw Uint8Array.
-      let initData: Uint8Array | undefined;
+    // Inline init (`initData` or an `initRef` → root inline entry) is Base64
+    // (CatalogTrack §5.1.20 / MSF-01 §5.1.7); decode it. initTrack-delivered
+    // cache holds raw Uint8Array.
+    let initData: Uint8Array | undefined;
+    if (reinitMse && newTrack && this.mediaSource?.changeType) {
       try {
         initData = this.decodeResolvedInlineInitData(newTrack)
           ?? (newTrack.initTrack ? this.initSegmentByTrack.get(newTrack.initTrack) : undefined);
@@ -2165,26 +2243,30 @@ export class MoqtPlayer {
         this.abortPendingVideoSwitch(sw, err instanceof Error ? err : new Error(String(err)));
         return;
       }
-      if (!initData) {
-        // selectVideoTrack should have pre-fetched this. Hitting here
-        // means the catalog has neither inline initData nor an
-        // initTrack for the target codec — abort, don't touch old.
-        this.log.warn(
-          '[SWITCH] init bytes missing for codec change → "%s" — aborting switch, old track stays active',
-          newTrack.codec,
-        );
-        this.abortPendingVideoSwitch(sw, new Error(
-          `Cannot switch to "${sw.newTrackName}": init bytes missing for codec "${newTrack.codec ?? ''}"`,
-        ));
-        return;
-      }
-      this.log.info('[SWITCH] codec change → calling MSE changeType: "%s" → "%s"',
-        this.currentVideoCodec ?? '(unknown)', newTrack.codec);
+    }
+
+    if (needsChangeType && newTrack && this.mediaSource?.changeType && !initData) {
+      // selectVideoTrack should have pre-fetched this. Hitting here
+      // means the catalog has neither inline initData nor an
+      // initTrack for the target codec — abort, don't touch old.
+      this.log.warn(
+        '[SWITCH] init bytes missing for codec change → "%s" — aborting switch, old track stays active',
+        newTrack.codec,
+      );
+      this.abortPendingVideoSwitch(sw, new Error(
+        `Cannot switch to "${sw.newTrackName}": init bytes missing for codec "${newTrack.codec ?? ''}"`,
+      ));
+      return;
+    }
+
+    if (initData && newTrack && this.mediaSource?.changeType) {
+      this.log.info('[SWITCH] re-initializing MSE for "%s": "%s" → "%s"',
+        sw.newTrackName, this.currentVideoCodec ?? '(unknown)', newTrack.codec);
       this.mediaSource.changeType('video', newTrack.codec ?? '', initData)
         .then(() => {
           // Pivot succeeded. NOW it's safe to tear down the old track
-          // and flush the staged new-track segments into the retyped
-          // SourceBuffer.
+          // and flush the staged new-track segments into the
+          // re-initialized SourceBuffer.
           this.unsubscribeOldVideoTrack(sw);
           this.currentVideoCodec = newTrack.codec ?? null;
           this.flushCmafStagedBuffer(sw);
@@ -2298,8 +2380,14 @@ export class MoqtPlayer {
     this.locmafDecoders.delete(sw.oldTrackName);
     this.locmafDecoderInit.delete(sw.oldTrackName);
     this.locmafHealth.delete(sw.oldTrackName);
-    const cmafStaged = this.cmafSwitchStagingBuffer;
+    const staged = this.cmafSwitchStagingBuffer;
     this.cmafSwitchStagingBuffer = [];
+    this.cmafSwitchContexts.clear();
+    // Drop staged chunks ahead of the first sync sample (the tail of a group
+    // the subscription joined mid-way): they have no reference picture in
+    // the new track, and MSE would discard them anyway.
+    const syncIdx = staged.findIndex(e => e.sync === true);
+    const cmafStaged = syncIdx > 0 ? staged.slice(syncIdx) : staged;
     for (const { trackName: stagedTrack, mediaType: stagedMt, groupId, payload } of cmafStaged) {
       this.cmafAssembler?.push(stagedMt, stagedTrack, groupId, payload);
     }
@@ -2346,17 +2434,7 @@ export class MoqtPlayer {
     sw: NonNullable<MoqtPlayer['pendingVideoSwitch']>,
     cause: Error,
   ): void {
-    if (this.connection && this.subscriptionManager) {
-      this.retireMediaSubscription(sw.newRequestId, this.connection);
-      try { this.connection.unsubscribe(varint(sw.newRequestId)); } catch { /* ignore */ }
-    }
-    this.cmafSwitchStagingBuffer = [];
-    this.switchStagingBuffer = [];
-    this.locmafDecoders.delete(sw.newTrackName);
-    this.locmafDecoderInit.delete(sw.newTrackName);
-    this.locmafHealth.delete(sw.newTrackName);
-    this.pendingVideoSwitch = null;
-    this.switchInProgress = false;
+    this.discardPendingVideoSwitch(sw);
     this.emitter.emit('quality_switch_failed', {
       type: 'quality_switch_failed',
       fromTrackName: sw.oldTrackName,
@@ -2371,6 +2449,54 @@ export class MoqtPlayer {
       `Track switch to "${sw.newTrackName}" failed: ${cause.message}`,
       { cause, context: { newTrackName: sw.newTrackName, oldTrackName: sw.oldTrackName } },
     ));
+  }
+
+  /**
+   * Replace a pending switch that has not started committing. The pending
+   * target is unsubscribed and its staged objects dropped; the old track
+   * keeps playing until the replacement commits. A switch that is already
+   * committing (re-initializing the sink) cannot be unwound, so the new
+   * request is rejected instead.
+   */
+  private supersedePendingVideoSwitch(
+    sw: NonNullable<MoqtPlayer['pendingVideoSwitch']>,
+    nextTrackName: string,
+  ): void {
+    if (this.switchInProgress) {
+      throw new Error(
+        `Cannot switch to "${nextTrackName}": switch to "${sw.newTrackName}" is committing`,
+      );
+    }
+    this.log.info('[SWITCH] superseded: "%s" → "%s" replaced by "%s"',
+      sw.oldTrackName, sw.newTrackName, nextTrackName);
+    this.discardPendingVideoSwitch(sw);
+    this.emitter.emit('quality_switch_failed', {
+      type: 'quality_switch_failed',
+      fromTrackName: sw.oldTrackName,
+      toTrackName: sw.newTrackName,
+      reason: sw.reason,
+      error: new Error(`Superseded by switch to "${nextTrackName}"`),
+    });
+  }
+
+  /** Unsubscribe a pending switch's target and drop everything staged for it. */
+  private discardPendingVideoSwitch(sw: NonNullable<MoqtPlayer['pendingVideoSwitch']>): void {
+    if (this.switchStagingTimeout !== null) {
+      clearTimeout(this.switchStagingTimeout);
+      this.switchStagingTimeout = null;
+    }
+    if (this.connection && this.subscriptionManager) {
+      this.retireMediaSubscription(sw.newRequestId, this.connection);
+      try { this.connection.unsubscribe(varint(sw.newRequestId)); } catch { /* ignore */ }
+    }
+    this.cmafSwitchStagingBuffer = [];
+    this.cmafSwitchContexts.clear();
+    this.switchStagingBuffer = [];
+    this.locmafDecoders.delete(sw.newTrackName);
+    this.locmafDecoderInit.delete(sw.newTrackName);
+    this.locmafHealth.delete(sw.newTrackName);
+    this.pendingVideoSwitch = null;
+    this.switchInProgress = false;
   }
 
   // ─── Event API ──────────────────────────────────────────
@@ -2653,11 +2779,13 @@ export class MoqtPlayer {
       // evicting decoder reference frames.
       if (this.pendingVideoSwitch && mediaType === 'video'
           && trackName === this.pendingVideoSwitch.newTrackName) {
+        const sync = this.cmafFirstSampleSync(trackName, obj.payload);
         this.cmafSwitchStagingBuffer.push({
           trackName,
           mediaType,
           groupId: BigInt(obj.groupId),
           payload: obj.payload,
+          ...(sync !== undefined ? { sync } : {}),
         });
 
         if (this.switchStagingTimeout === null) {
@@ -2667,9 +2795,15 @@ export class MoqtPlayer {
           }, SWITCH_STAGING_TIMEOUT_MS);
         }
 
-        // CMAF: groupId boundary = keyframe. objectId 0 of a new group
-        // is the moof of a fresh GOP, suitable as a splice point.
-        if (BigInt(obj.objectId) === 0n) {
+        // Splice on a sync sample: the fragment's own sample flags when
+        // readable, else the group boundary (objectId 0 starts a GOP).
+        // Group boundaries alone are not enough: a group whose first
+        // sample is not a sync sample would put a delta frame right after
+        // the new init, and MSE drops frames until the next random access
+        // point, leaving a gap at the playhead.
+        // @see ISO/IEC 14496-12 §8.8.3.1 (sample_is_non_sync_sample)
+        // @see https://www.w3.org/TR/media-source-2/#sourcebuffer-coded-frame-processing
+        if (sync ?? BigInt(obj.objectId) === 0n) {
           this.completePendingVideoSwitch();
         } else if (this.cmafSwitchStagingBuffer.length >= SWITCH_STAGING_MAX_OBJECTS) {
           this.log.warn('[SWITCH] CMAF staging overflow (%d objects) — force-completing',
@@ -2678,6 +2812,14 @@ export class MoqtPlayer {
         }
         return;
       }
+
+      // After the switch commits (switchInProgress), drop old-track
+      // segments. The commit re-initializes the SourceBuffer with the new
+      // track's init; an old-track moof queued behind that init names a
+      // track_ID the new moov lacks and fails the append parser, which
+      // errors the whole MediaSource.
+      // @see https://www.w3.org/TR/media-source-2/#sourcebuffer-segment-parser-loop
+      if (this.isRetiredVideoTrack(mediaType, trackName)) return;
 
       // Early stale-group drop: skip objects from groups older than what
       // MSE has already committed. Prevents late-arriving old groups from
@@ -5601,6 +5743,7 @@ export class MoqtPlayer {
     this.switchInProgress = false;
     this.switchStagingBuffer = [];
     this.cmafSwitchStagingBuffer = [];
+    this.cmafSwitchContexts.clear();
     if (this.switchStagingTimeout !== null) {
       clearTimeout(this.switchStagingTimeout);
       this.switchStagingTimeout = null;
