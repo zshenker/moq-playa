@@ -30067,6 +30067,12 @@ var PlayaPlayer = (() => {
      * frames and only keyframes from the new track decode.
      */
     cmafSwitchStagingBuffer = [];
+    /**
+     * Track context per CMAF switch target, for reading staged fragments'
+     * sample flags. `null` when the track's init is unavailable or not a
+     * single-track CMAF Header.
+     */
+    cmafSwitchContexts = /* @__PURE__ */ new Map();
     /** Timeout for keyframe arrival during make-before-break switch. */
     switchStagingTimeout = null;
     /**
@@ -30574,7 +30580,7 @@ var PlayaPlayer = (() => {
         this.log.debug("[LOCMAF] video synced at g=%s o=%s", String(obj.groupId), String(obj.objectId));
       }
       if (this.pendingVideoSwitch && mediaType === "video" && trackName === this.pendingVideoSwitch.newTrackName) {
-        this.cmafSwitchStagingBuffer.push({ trackName, mediaType, groupId, payload: decoded.bytes });
+        this.cmafSwitchStagingBuffer.push({ trackName, mediaType, groupId, payload: decoded.bytes, sync: decoded.sync });
         if (this.switchStagingTimeout === null) {
           this.switchStagingTimeout = setTimeout(() => {
             this.log.warn("[SWITCH] LOCMAF keyframe timeout \u2014 force-completing after %dms", SWITCH_STAGING_TIMEOUT_MS);
@@ -30589,6 +30595,8 @@ var PlayaPlayer = (() => {
         }
         return;
       }
+      if (this.isRetiredVideoTrack(mediaType, trackName))
+        return;
       if (this.mediaSource && "getCommittedGroupFloor" in this.mediaSource) {
         const floor = this.mediaSource.getCommittedGroupFloor(mediaType, trackName);
         if (floor !== void 0 && groupId < floor)
@@ -30681,6 +30689,38 @@ var PlayaPlayer = (() => {
           baseMediaDecodeTime: result.baseMediaDecodeTime
         }
       };
+    }
+    /** True for an old-track video object after a pending switch has started committing. */
+    isRetiredVideoTrack(mediaType, trackName) {
+      return this.switchInProgress && this.pendingVideoSwitch !== null && mediaType === "video" && trackName === this.pendingVideoSwitch.oldTrackName;
+    }
+    /**
+     * Whether a CMAF fragment's first sample is a sync sample, read from its
+     * trun/tfhd/trex sample flags against the track's own init. `undefined`
+     * when that cannot be determined (no init, legacy moof-only object,
+     * unreadable fragment) — callers fall back to the group-boundary rule.
+     */
+    cmafFirstSampleSync(trackName, payload) {
+      let context = this.cmafSwitchContexts.get(trackName);
+      if (context === void 0) {
+        context = null;
+        const track = this._catalogState?.tracks.find((t) => t.name === trackName);
+        try {
+          const init = track && (this.decodeResolvedInlineInitData(track) ?? (track.initTrack ? this.initSegmentByTrack.get(track.initTrack) : void 0));
+          if (init)
+            context = parseLocmafTrackContext(init);
+        } catch {
+        }
+        this.cmafSwitchContexts.set(trackName, context);
+      }
+      if (!context)
+        return void 0;
+      try {
+        const first = readCmafChunkSamples(payload, context).effective.flags[0];
+        return first === void 0 ? void 0 : isSyncSampleFlags(first);
+      } catch {
+        return void 0;
+      }
     }
     /** Whether a track of this packaging plays through MSE in this player (LOCMAF may take the frame path). */
     usesMse(packaging) {
@@ -31106,6 +31146,11 @@ var PlayaPlayer = (() => {
       }
       if (reason === "manual")
         this.qualityController?.lockManual();
+      const pending = this.pendingVideoSwitch;
+      if (pending?.newTrackName === trackName)
+        return;
+      if (pending)
+        this.supersedePendingVideoSwitch(pending, trackName);
       if (currentVideoTrackName === trackName)
         return;
       const needsCodecChange = this.usesMse(targetTrack.packaging) && targetTrack.codec !== void 0 && (this.currentVideoCodec === null || !codecsCompatible(targetTrack.codec, this.currentVideoCodec));
@@ -31128,7 +31173,7 @@ var PlayaPlayer = (() => {
             throw err;
           }
         }
-      } else if (targetTrack.packaging === "locmaf" && targetTrack.initTrack) {
+      } else if ((targetTrack.packaging === "locmaf" || this.usesMse(targetTrack.packaging)) && targetTrack.initTrack) {
         let inlineInit;
         try {
           inlineInit = this.decodeResolvedInlineInitData(targetTrack);
@@ -31136,7 +31181,7 @@ var PlayaPlayer = (() => {
           throw new Error(`Cannot switch to "${trackName}": ${err instanceof Error ? err.message : String(err)}`);
         }
         if (!inlineInit) {
-          this.log.info('[SWITCH] locmaf "%s" \u2192 "%s": prefetching CMAF Header from init track "%s"', currentVideoTrackName, trackName, targetTrack.initTrack);
+          this.log.info('[SWITCH] "%s" \u2192 "%s": prefetching CMAF Header from init track "%s"', currentVideoTrackName, trackName, targetTrack.initTrack);
           await this.ensureInitTrack(targetTrack.initTrack);
         }
       }
@@ -31179,6 +31224,21 @@ var PlayaPlayer = (() => {
       }
       if (!this.subscriptionManager)
         return;
+      const raced = this.pendingVideoSwitch;
+      if (raced) {
+        try {
+          this.supersedePendingVideoSwitch(raced, trackName);
+        } catch (err) {
+          if (this.connection) {
+            this.retireMediaSubscription(reqIdBigInt, this.connection);
+            try {
+              this.connection.unsubscribe(varint(reqIdBigInt));
+            } catch {
+            }
+          }
+          throw err;
+        }
+      }
       this.log.info('[SWITCH] start: "%s" \u2192 "%s" (newReqId=%s, oldReqId=%s)', currentVideoTrackName, trackName, reqIdBigInt, currentVideoRequestId);
       if (currentVideoRequestId !== null) {
         this.pendingVideoSwitch = {
@@ -31224,24 +31284,28 @@ var PlayaPlayer = (() => {
         this.switchInProgress = false;
         this.switchStagingBuffer = [];
         this.cmafSwitchStagingBuffer = [];
+        this.cmafSwitchContexts.clear();
         return;
       }
       const newTrack = this._catalogState?.tracks.find((t) => t.name === sw.newTrackName && t.role === "video");
-      const needsChangeType = newTrack !== void 0 && this.usesMse(newTrack.packaging) && newTrack.codec !== void 0 && (this.currentVideoCodec === null || !codecsCompatible(newTrack.codec, this.currentVideoCodec));
-      if (needsChangeType && newTrack && this.mediaSource?.changeType) {
-        let initData;
+      const reinitMse = newTrack !== void 0 && this.usesMse(newTrack.packaging) && newTrack.codec !== void 0;
+      const needsChangeType = reinitMse && newTrack !== void 0 && (this.currentVideoCodec === null || !codecsCompatible(newTrack.codec, this.currentVideoCodec));
+      let initData;
+      if (reinitMse && newTrack && this.mediaSource?.changeType) {
         try {
           initData = this.decodeResolvedInlineInitData(newTrack) ?? (newTrack.initTrack ? this.initSegmentByTrack.get(newTrack.initTrack) : void 0);
         } catch (err) {
           this.abortPendingVideoSwitch(sw, err instanceof Error ? err : new Error(String(err)));
           return;
         }
-        if (!initData) {
-          this.log.warn('[SWITCH] init bytes missing for codec change \u2192 "%s" \u2014 aborting switch, old track stays active', newTrack.codec);
-          this.abortPendingVideoSwitch(sw, new Error(`Cannot switch to "${sw.newTrackName}": init bytes missing for codec "${newTrack.codec ?? ""}"`));
-          return;
-        }
-        this.log.info('[SWITCH] codec change \u2192 calling MSE changeType: "%s" \u2192 "%s"', this.currentVideoCodec ?? "(unknown)", newTrack.codec);
+      }
+      if (needsChangeType && newTrack && this.mediaSource?.changeType && !initData) {
+        this.log.warn('[SWITCH] init bytes missing for codec change \u2192 "%s" \u2014 aborting switch, old track stays active', newTrack.codec);
+        this.abortPendingVideoSwitch(sw, new Error(`Cannot switch to "${sw.newTrackName}": init bytes missing for codec "${newTrack.codec ?? ""}"`));
+        return;
+      }
+      if (initData && newTrack && this.mediaSource?.changeType) {
+        this.log.info('[SWITCH] re-initializing MSE for "%s": "%s" \u2192 "%s"', sw.newTrackName, this.currentVideoCodec ?? "(unknown)", newTrack.codec);
         this.mediaSource.changeType("video", newTrack.codec ?? "", initData).then(() => {
           this.unsubscribeOldVideoTrack(sw);
           this.currentVideoCodec = newTrack.codec ?? null;
@@ -31308,8 +31372,11 @@ var PlayaPlayer = (() => {
       this.locmafDecoders.delete(sw.oldTrackName);
       this.locmafDecoderInit.delete(sw.oldTrackName);
       this.locmafHealth.delete(sw.oldTrackName);
-      const cmafStaged = this.cmafSwitchStagingBuffer;
+      const staged = this.cmafSwitchStagingBuffer;
       this.cmafSwitchStagingBuffer = [];
+      this.cmafSwitchContexts.clear();
+      const syncIdx = staged.findIndex((e) => e.sync === true);
+      const cmafStaged = syncIdx > 0 ? staged.slice(syncIdx) : staged;
       for (const { trackName: stagedTrack, mediaType: stagedMt, groupId, payload } of cmafStaged) {
         this.cmafAssembler?.push(stagedMt, stagedTrack, groupId, payload);
       }
@@ -31344,20 +31411,7 @@ var PlayaPlayer = (() => {
      * discarded; an error event surfaces to the application.
      */
     abortPendingVideoSwitch(sw, cause) {
-      if (this.connection && this.subscriptionManager) {
-        this.retireMediaSubscription(sw.newRequestId, this.connection);
-        try {
-          this.connection.unsubscribe(varint(sw.newRequestId));
-        } catch {
-        }
-      }
-      this.cmafSwitchStagingBuffer = [];
-      this.switchStagingBuffer = [];
-      this.locmafDecoders.delete(sw.newTrackName);
-      this.locmafDecoderInit.delete(sw.newTrackName);
-      this.locmafHealth.delete(sw.newTrackName);
-      this.pendingVideoSwitch = null;
-      this.switchInProgress = false;
+      this.discardPendingVideoSwitch(sw);
       this.emitter.emit("quality_switch_failed", {
         type: "quality_switch_failed",
         fromTrackName: sw.oldTrackName,
@@ -31366,6 +31420,49 @@ var PlayaPlayer = (() => {
         error: cause
       });
       this.emitError(createPlayerError("degraded", "decoder", PlayerErrorCode.VIDEO_DECODE_ERROR, `Track switch to "${sw.newTrackName}" failed: ${cause.message}`, { cause, context: { newTrackName: sw.newTrackName, oldTrackName: sw.oldTrackName } }));
+    }
+    /**
+     * Replace a pending switch that has not started committing. The pending
+     * target is unsubscribed and its staged objects dropped; the old track
+     * keeps playing until the replacement commits. A switch that is already
+     * committing (re-initializing the sink) cannot be unwound, so the new
+     * request is rejected instead.
+     */
+    supersedePendingVideoSwitch(sw, nextTrackName) {
+      if (this.switchInProgress) {
+        throw new Error(`Cannot switch to "${nextTrackName}": switch to "${sw.newTrackName}" is committing`);
+      }
+      this.log.info('[SWITCH] superseded: "%s" \u2192 "%s" replaced by "%s"', sw.oldTrackName, sw.newTrackName, nextTrackName);
+      this.discardPendingVideoSwitch(sw);
+      this.emitter.emit("quality_switch_failed", {
+        type: "quality_switch_failed",
+        fromTrackName: sw.oldTrackName,
+        toTrackName: sw.newTrackName,
+        reason: sw.reason,
+        error: new Error(`Superseded by switch to "${nextTrackName}"`)
+      });
+    }
+    /** Unsubscribe a pending switch's target and drop everything staged for it. */
+    discardPendingVideoSwitch(sw) {
+      if (this.switchStagingTimeout !== null) {
+        clearTimeout(this.switchStagingTimeout);
+        this.switchStagingTimeout = null;
+      }
+      if (this.connection && this.subscriptionManager) {
+        this.retireMediaSubscription(sw.newRequestId, this.connection);
+        try {
+          this.connection.unsubscribe(varint(sw.newRequestId));
+        } catch {
+        }
+      }
+      this.cmafSwitchStagingBuffer = [];
+      this.cmafSwitchContexts.clear();
+      this.switchStagingBuffer = [];
+      this.locmafDecoders.delete(sw.newTrackName);
+      this.locmafDecoderInit.delete(sw.newTrackName);
+      this.locmafHealth.delete(sw.newTrackName);
+      this.pendingVideoSwitch = null;
+      this.switchInProgress = false;
     }
     // ─── Event API ──────────────────────────────────────────
     /**
@@ -31542,11 +31639,13 @@ var PlayaPlayer = (() => {
           }
         }
         if (this.pendingVideoSwitch && mediaType === "video" && trackName === this.pendingVideoSwitch.newTrackName) {
+          const sync = this.cmafFirstSampleSync(trackName, obj.payload);
           this.cmafSwitchStagingBuffer.push({
             trackName,
             mediaType,
             groupId: BigInt(obj.groupId),
-            payload: obj.payload
+            payload: obj.payload,
+            ...sync !== void 0 ? { sync } : {}
           });
           if (this.switchStagingTimeout === null) {
             this.switchStagingTimeout = setTimeout(() => {
@@ -31554,7 +31653,7 @@ var PlayaPlayer = (() => {
               this.completePendingVideoSwitch();
             }, SWITCH_STAGING_TIMEOUT_MS);
           }
-          if (BigInt(obj.objectId) === 0n) {
+          if (sync ?? BigInt(obj.objectId) === 0n) {
             this.completePendingVideoSwitch();
           } else if (this.cmafSwitchStagingBuffer.length >= SWITCH_STAGING_MAX_OBJECTS) {
             this.log.warn("[SWITCH] CMAF staging overflow (%d objects) \u2014 force-completing", SWITCH_STAGING_MAX_OBJECTS);
@@ -31562,6 +31661,8 @@ var PlayaPlayer = (() => {
           }
           return;
         }
+        if (this.isRetiredVideoTrack(mediaType, trackName))
+          return;
         const groupId = BigInt(obj.groupId);
         if (this.mediaSource && "getCommittedGroupFloor" in this.mediaSource) {
           const floor = this.mediaSource.getCommittedGroupFloor(mediaType, trackName);
@@ -34055,6 +34156,7 @@ var PlayaPlayer = (() => {
       this.switchInProgress = false;
       this.switchStagingBuffer = [];
       this.cmafSwitchStagingBuffer = [];
+      this.cmafSwitchContexts.clear();
       if (this.switchStagingTimeout !== null) {
         clearTimeout(this.switchStagingTimeout);
         this.switchStagingTimeout = null;
@@ -39513,6 +39615,8 @@ var PlayaPlayer = (() => {
     lastCompletedOp = { video: null, audio: null };
     /** trex defaults from the init segment, per media type. */
     videoTrex;
+    /** Mime type each SourceBuffer currently parses (creation or last `changeType`). */
+    bufferMime = { video: null, audio: null };
     audioTrex;
     /**
      * Ranges for the in-flight appendBuffer, per media type, with the
@@ -39673,6 +39777,7 @@ var PlayaPlayer = (() => {
             const mimeType = `video/mp4; codecs="${config.video.codec}"`;
             this.logDebug("[MSE] Creating video SourceBuffer:", mimeType);
             this.videoBuffer = this.ms.addSourceBuffer(mimeType);
+            this.bufferMime.video = mimeType;
             this.videoBuffer.mode = "segments";
             this.wireBufferLifecycle("video", this.videoBuffer);
             if (config.video.initData.byteLength > 0) {
@@ -39693,6 +39798,7 @@ var PlayaPlayer = (() => {
             const mimeType = `audio/mp4; codecs="${config.audio.codec}"`;
             this.logDebug("[MSE] Creating audio SourceBuffer:", mimeType);
             this.audioBuffer = this.ms.addSourceBuffer(mimeType);
+            this.bufferMime.audio = mimeType;
             this.audioBuffer.mode = "segments";
             this.wireBufferLifecycle("audio", this.audioBuffer);
             if (config.audio.initData.byteLength > 0) {
@@ -39764,17 +39870,19 @@ var PlayaPlayer = (() => {
     /**
      * Re-initialize a SourceBuffer for a new codec/init segment.
      *
-     * Used when the player switches to a track in a different codec
-     * family (e.g., AVC → HEVC). The MSE spec lets a SourceBuffer parse
-     * a new mime type via `changeType()`, after which the next append
-     * MUST be the init segment for that codec.
+     * Used on every CMAF track switch. Each track carries its own init
+     * segment (track_ID, sample entry, trex defaults), so the new track's
+     * media can only be parsed after its init has been appended. When the
+     * codec differs (e.g., AVC → HEVC) the MSE spec also requires
+     * `changeType()` before that init; when the mime type is unchanged the
+     * init alone is enough (init segment received algorithm).
      *
      * Borrowed from the WebCodecs path: serialize state-mutating ops
      * with data appends. Concretely:
      *   1. Drop any queued media — those are old-codec bytes that would
      *      land *after* the new init and corrupt the splice.
      *   2. Wait for the in-flight `appendBuffer` to settle.
-     *   3. `sourceBuffer.changeType(newMime)`.
+     *   3. `sourceBuffer.changeType(newMime)`, if the mime type changes.
      *   4. Append the new init segment, await `updateend`.
      *   5. Refresh the trex cache from the new init (per-sample-duration
      *      defaults change with the codec family).
@@ -39785,10 +39893,12 @@ var PlayaPlayer = (() => {
      * @param codec Codec string for the new mime type
      *              (e.g. `"hvc1.1.6.L93.90"`).
      * @param initData Raw init segment bytes (ftyp+moov) for the new codec.
-     * @throws If the SourceBuffer is not initialized or the browser
-     *         doesn't implement `SourceBuffer.changeType()`.
+     * @throws If the SourceBuffer is not initialized, or the mime type
+     *         changes and the browser doesn't implement
+     *         `SourceBuffer.changeType()`.
      *
      * @see https://www.w3.org/TR/media-source-2/#dom-sourcebuffer-changetype
+     * @see https://www.w3.org/TR/media-source-2/#sourcebuffer-init-segment-received
      */
     async changeType(mediaType, codec, initData) {
       if (this.destroyed)
@@ -39798,7 +39908,9 @@ var PlayaPlayer = (() => {
         throw new Error(`MseMediaSource.changeType: ${mediaType} SourceBuffer not initialized`);
       }
       const sb = buffer;
-      if (typeof sb.changeType !== "function") {
+      const mimeType = `${mediaType}/mp4; codecs="${codec}"`;
+      const retype = this.bufferMime[mediaType] !== mimeType;
+      if (retype && typeof sb.changeType !== "function") {
         throw new Error("MseMediaSource.changeType: SourceBuffer.changeType not supported");
       }
       if (this.changingType[mediaType]) {
@@ -39813,9 +39925,11 @@ var PlayaPlayer = (() => {
         }
         const handler = mediaType === "video" ? "vide" : "soun";
         const filtered = filterInitSegment(initData, handler);
-        const mimeType = `${mediaType}/mp4; codecs="${codec}"`;
-        this.logDebug("[MSE] changeType %s \u2192 %s (init=%dB)", mediaType, mimeType, filtered.byteLength);
-        sb.changeType(mimeType);
+        this.logDebug("[MSE] changeType %s \u2192 %s (init=%dB, retype=%s)", mediaType, mimeType, filtered.byteLength, retype);
+        if (retype) {
+          sb.changeType(mimeType);
+          this.bufferMime[mediaType] = mimeType;
+        }
         this.runMutation(mediaType, "init-append", () => buffer.appendBuffer(filtered.buffer));
         await this.waitForBufferEvent(buffer);
         const trexMap = readTrexDefaults(filtered);
@@ -39830,10 +39944,6 @@ var PlayaPlayer = (() => {
           this.videoInitSummary = summary;
         else
           this.audioInitSummary = summary;
-        if (!buffer.updating) {
-          buffer.timestampOffset = this.video.currentTime;
-          this.logDebug("[MSE] changeType timestampOffset set to %.2f", this.video.currentTime);
-        }
         const timelines = mediaType === "video" ? this.videoTimelines : this.audioTimelines;
         timelines.clear();
       } finally {
@@ -39949,6 +40059,8 @@ var PlayaPlayer = (() => {
       }
       this.videoBuffer = null;
       this.audioBuffer = null;
+      this.bufferMime.video = null;
+      this.bufferMime.audio = null;
       this.videoQueue.length = 0;
       this.audioQueue.length = 0;
       this.initialized = false;
