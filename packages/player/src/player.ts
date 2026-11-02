@@ -34,6 +34,7 @@ import { BufferBasedController } from '@openmoq/playback';
 import type { ClockSource, DecoderCommand, PlaybackEvent, RecoveryAction, RecoveryController, DecoderFeedback } from '@openmoq/playback';
 import type { AltGroup, CatalogState, CatalogTrack } from '@openmoq/msf';
 import type { LocHeaders } from '@openmoq/loc';
+import { GroupBoundaryOrder } from './group-boundary-order.js';
 import { LocmafFormatError, LocmafTrackDecoder, deserializeLocmafObject, readVi64, sliceFrames, ticksToMicros, codecDescriptionFromInit, isCmafHeader, isSyncSampleFlags, readCmafChunkSamples, parseEmsgBoxes, parseLocmafTrackContext } from '@openmoq/locmaf';
 import type { EmsgEvent, LocmafEffectiveSamples, GenBox, LocmafTrackContext } from '@openmoq/locmaf';
 import { groupByAlt, parseSapTimeline, parseEventTimeline, CMSF_SAP_EVENT_TYPE, isTrackPackagingSupported } from '@openmoq/msf';
@@ -749,6 +750,9 @@ export class MoqtPlayer {
    * single-track CMAF Header.
    */
   private readonly cmafSwitchContexts = new Map<string, LocmafTrackContext | null>();
+
+  /** Per video track: orders objects across group boundaries on the MSE paths. */
+  private readonly videoGroupOrders = new Map<string, GroupBoundaryOrder>();
 
   /** Timeout for keyframe arrival during make-before-break switch. */
   private switchStagingTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -1539,6 +1543,25 @@ export class MoqtPlayer {
   }
 
   /** Whether a track of this packaging plays through MSE in this player (LOCMAF may take the frame path). */
+  /**
+   * Deliver a video object on an MSE path with its group's late tail ahead of
+   * the next group (see {@link GroupBoundaryOrder}).
+   */
+  private orderVideoGroups(trackName: string, obj: MoqtObject, deliver: (obj: MoqtObject) => void): void {
+    let order = this.videoGroupOrders.get(trackName);
+    if (!order) {
+      order = new GroupBoundaryOrder(deliver);
+      this.videoGroupOrders.set(trackName, order);
+    }
+    order.push(obj);
+  }
+
+  /** Release a retired video track's group ordering (held objects, deadline). */
+  private disposeVideoGroupOrder(trackName: string): void {
+    this.videoGroupOrders.get(trackName)?.dispose();
+    this.videoGroupOrders.delete(trackName);
+  }
+
   private usesMse(packaging: string | undefined): boolean {
     return usesMsePath(packaging, this.config.locmafDecoding);
   }
@@ -2360,6 +2383,7 @@ export class MoqtPlayer {
    * `mediaSource.changeType` resolves).
    */
   private unsubscribeOldVideoTrack(sw: NonNullable<MoqtPlayer['pendingVideoSwitch']>): void {
+    this.disposeVideoGroupOrder(sw.oldTrackName);
     if (!this.connection || !this.subscriptionManager) return;
     this.retireMediaSubscription(sw.oldRequestId, this.connection);
     this.connection.unsubscribe(varint(sw.oldRequestId));
@@ -2492,6 +2516,7 @@ export class MoqtPlayer {
     this.cmafSwitchStagingBuffer = [];
     this.cmafSwitchContexts.clear();
     this.switchStagingBuffer = [];
+    this.disposeVideoGroupOrder(sw.newTrackName);
     this.locmafDecoders.delete(sw.newTrackName);
     this.locmafDecoderInit.delete(sw.newTrackName);
     this.locmafHealth.delete(sw.newTrackName);
@@ -2694,7 +2719,14 @@ export class MoqtPlayer {
     // Wire LOCMAF object delivery → reconstruction into CMAF chunks → assembler.
     // @see draft-einarsson-moq-locmaf-01 §15, §16
     this.subscriptionManager.onLocmafObject = (mediaType, trackName, obj) => {
-      this.orderWarmStartHead(trackName, obj, (o) => this.onLocmafMediaObject(mediaType, trackName, o));
+      this.orderWarmStartHead(trackName, obj, (o) => {
+        // The §16 frame path reorders in the LOC jitter buffer; MSE needs it here.
+        if (mediaType !== 'video' || this.locmafFramePath) {
+          this.onLocmafMediaObject(mediaType, trackName, o);
+          return;
+        }
+        this.orderVideoGroups(trackName, o, (v) => this.onLocmafMediaObject(mediaType, trackName, v));
+      });
     };
 
     // Wire CMAF object delivery → MediaSource adapter (pipeline bypass)
@@ -2835,7 +2867,13 @@ export class MoqtPlayer {
       this.cmafAssembler?.push(mediaType, trackName, groupId, obj.payload);
     };
     this.subscriptionManager.onCmafObject = (mediaType, trackName, obj) => {
-      this.orderWarmStartHead(trackName, obj, (o) => deliverCmafObject(mediaType, trackName, o));
+      this.orderWarmStartHead(trackName, obj, (o) => {
+        if (mediaType !== 'video') {
+          deliverCmafObject(mediaType, trackName, o);
+          return;
+        }
+        this.orderVideoGroups(trackName, o, (v) => deliverCmafObject(mediaType, trackName, v));
+      });
     };
 
     // §2.4.2: Malformed Track — MUST UNSUBSCRIBE, SHOULD deliver error
@@ -5748,6 +5786,8 @@ export class MoqtPlayer {
       clearTimeout(this.switchStagingTimeout);
       this.switchStagingTimeout = null;
     }
+    for (const order of this.videoGroupOrders.values()) order.dispose();
+    this.videoGroupOrders.clear();
     // Reject any pending TRACK_STATUS queries
     for (const [, pending] of this.pendingTrackStatuses) {
       pending.reject(new Error('Player destroyed'));
