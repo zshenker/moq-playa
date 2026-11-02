@@ -23476,6 +23476,83 @@ var PlayaPlayer = (() => {
     }
   };
 
+  // ../player/dist/group-boundary-order.js
+  var GROUP_BOUNDARY_WAIT_MS = 250;
+  var GroupBoundaryOrder = class {
+    deliver;
+    waitMs;
+    group = null;
+    groupEnded = false;
+    /** The track has delivered END_OF_GROUP, so a tail is worth waiting for. */
+    signalsEnd = false;
+    held = [];
+    timer = null;
+    constructor(deliver, waitMs = GROUP_BOUNDARY_WAIT_MS) {
+      this.deliver = deliver;
+      this.waitMs = waitMs;
+    }
+    push(obj) {
+      const group = BigInt(obj.groupId);
+      if (this.group === null || group === this.group || group < this.group) {
+        this.release(obj);
+        return;
+      }
+      if (this.groupEnded || !this.signalsEnd) {
+        this.release(obj);
+        return;
+      }
+      this.held.push(obj);
+      if (this.timer === null) {
+        this.timer = setTimeout(() => {
+          this.timer = null;
+          this.flush();
+        }, this.waitMs);
+      }
+    }
+    /** Release everything held, in (group, object) order. */
+    flush() {
+      if (this.timer !== null) {
+        clearTimeout(this.timer);
+        this.timer = null;
+      }
+      const held = this.held.sort((a, b) => {
+        const ga = BigInt(a.groupId);
+        const gb = BigInt(b.groupId);
+        if (ga !== gb)
+          return ga < gb ? -1 : 1;
+        const oa = BigInt(a.objectId);
+        const ob = BigInt(b.objectId);
+        return oa < ob ? -1 : oa > ob ? 1 : 0;
+      });
+      this.held = [];
+      for (const obj of held)
+        this.release(obj);
+    }
+    /** Drop held objects and the pending deadline (track retired or player reset). */
+    dispose() {
+      if (this.timer !== null) {
+        clearTimeout(this.timer);
+        this.timer = null;
+      }
+      this.held = [];
+    }
+    release(obj) {
+      const group = BigInt(obj.groupId);
+      if (this.group === null || group > this.group) {
+        this.group = group;
+        this.groupEnded = false;
+      }
+      const endsGroup = obj.kind === "gap" && obj.status === ObjectStatus.END_OF_GROUP;
+      if (endsGroup && group === this.group) {
+        this.groupEnded = true;
+        this.signalsEnd = true;
+      }
+      this.deliver(obj);
+      if (endsGroup && group === this.group && this.held.length > 0)
+        this.flush();
+    }
+  };
+
   // ../locmaf/dist/errors.js
   var LocmafFormatError = class extends Error {
     /** Draft section of the violated rule, e.g. `"7.1"` or `"11.2"`. */
@@ -30073,6 +30150,8 @@ var PlayaPlayer = (() => {
      * single-track CMAF Header.
      */
     cmafSwitchContexts = /* @__PURE__ */ new Map();
+    /** Per video track: orders objects across group boundaries on the MSE paths. */
+    videoGroupOrders = /* @__PURE__ */ new Map();
     /** Timeout for keyframe arrival during make-before-break switch. */
     switchStagingTimeout = null;
     /**
@@ -30723,6 +30802,23 @@ var PlayaPlayer = (() => {
       }
     }
     /** Whether a track of this packaging plays through MSE in this player (LOCMAF may take the frame path). */
+    /**
+     * Deliver a video object on an MSE path with its group's late tail ahead of
+     * the next group (see {@link GroupBoundaryOrder}).
+     */
+    orderVideoGroups(trackName, obj, deliver) {
+      let order = this.videoGroupOrders.get(trackName);
+      if (!order) {
+        order = new GroupBoundaryOrder(deliver);
+        this.videoGroupOrders.set(trackName, order);
+      }
+      order.push(obj);
+    }
+    /** Release a retired video track's group ordering (held objects, deadline). */
+    disposeVideoGroupOrder(trackName) {
+      this.videoGroupOrders.get(trackName)?.dispose();
+      this.videoGroupOrders.delete(trackName);
+    }
     usesMse(packaging) {
       return usesMsePath(packaging, this.config.locmafDecoding);
     }
@@ -31357,6 +31453,7 @@ var PlayaPlayer = (() => {
      * `mediaSource.changeType` resolves).
      */
     unsubscribeOldVideoTrack(sw) {
+      this.disposeVideoGroupOrder(sw.oldTrackName);
       if (!this.connection || !this.subscriptionManager)
         return;
       this.retireMediaSubscription(sw.oldRequestId, this.connection);
@@ -31458,6 +31555,7 @@ var PlayaPlayer = (() => {
       this.cmafSwitchStagingBuffer = [];
       this.cmafSwitchContexts.clear();
       this.switchStagingBuffer = [];
+      this.disposeVideoGroupOrder(sw.newTrackName);
       this.locmafDecoders.delete(sw.newTrackName);
       this.locmafDecoderInit.delete(sw.newTrackName);
       this.locmafHealth.delete(sw.newTrackName);
@@ -31591,7 +31689,13 @@ var PlayaPlayer = (() => {
         pipeline?.pushObject(obj, headers);
       };
       this.subscriptionManager.onLocmafObject = (mediaType, trackName, obj) => {
-        this.orderWarmStartHead(trackName, obj, (o) => this.onLocmafMediaObject(mediaType, trackName, o));
+        this.orderWarmStartHead(trackName, obj, (o) => {
+          if (mediaType !== "video" || this.locmafFramePath) {
+            this.onLocmafMediaObject(mediaType, trackName, o);
+            return;
+          }
+          this.orderVideoGroups(trackName, o, (v) => this.onLocmafMediaObject(mediaType, trackName, v));
+        });
       };
       const deliverCmafObject = (mediaType, trackName, obj) => {
         this.stampMediaArrival(BigInt(obj.trackAlias));
@@ -31672,7 +31776,13 @@ var PlayaPlayer = (() => {
         this.cmafAssembler?.push(mediaType, trackName, groupId, obj.payload);
       };
       this.subscriptionManager.onCmafObject = (mediaType, trackName, obj) => {
-        this.orderWarmStartHead(trackName, obj, (o) => deliverCmafObject(mediaType, trackName, o));
+        this.orderWarmStartHead(trackName, obj, (o) => {
+          if (mediaType !== "video") {
+            deliverCmafObject(mediaType, trackName, o);
+            return;
+          }
+          this.orderVideoGroups(trackName, o, (v) => deliverCmafObject(mediaType, trackName, v));
+        });
       };
       this.subscriptionManager.onMalformedTrack = (trackAlias, _mediaType, trackName, error, sourceConnection) => {
         this.handleMalformedTrack(trackAlias, trackName, error, sourceConnection);
@@ -34161,6 +34271,9 @@ var PlayaPlayer = (() => {
         clearTimeout(this.switchStagingTimeout);
         this.switchStagingTimeout = null;
       }
+      for (const order of this.videoGroupOrders.values())
+        order.dispose();
+      this.videoGroupOrders.clear();
       for (const [, pending] of this.pendingTrackStatuses) {
         pending.reject(new Error("Player destroyed"));
       }
