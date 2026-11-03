@@ -9,6 +9,8 @@
  *   - varint: a vi64  ← NOT the QUIC varint
  *   - location: two vi64 (group, object)
  *   - bytes: a vi64 length followed by that many bytes
+ *   - paramBlock (draft 23): a vi64 parameter count followed by that many
+ *     parameters, delimited by parsing them with the registry
  *
  * Because every parameter must be understood, there is no skip mechanism: an
  * unknown Type is a PROTOCOL_VIOLATION, and so is a cumulative Type that exceeds
@@ -20,8 +22,8 @@
 
 import { readVi64, writeVi64, vi64EncodingLength, MAX_VI64 } from '../primitives/vi64.js';
 import { readUint8, writeUint8, validateTrackNamespacePrefix } from '../primitives/bytes.js';
-import { ProtocolViolationError } from '../errors.js';
-import { MessageParam18, MessageParam22, type ParamValueKind } from './codes-18.js';
+import { ProtocolViolationError, SessionError } from '../errors.js';
+import { MessageParam18, MessageParam22, MessageParam23, type ParamValueKind } from './codes-18.js';
 
 export type { ParamValueKind };
 
@@ -36,7 +38,10 @@ export type MessageParamValue =
   | { readonly kind: 'namespace'; readonly value: Uint8Array[] }
   // draft-22 LOCATION_FILTER (§9.20.9): the Location Filter Type and its fields,
   // written as-is with no Length (the type delimits the value).
-  | { readonly kind: 'locationFilter'; readonly value: Uint8Array };
+  | { readonly kind: 'locationFilter'; readonly value: Uint8Array }
+  // draft-23 FILL_PARAMETERS (§9.19.15): `count` parameters whose encoded
+  // sequence (without the count) is `value`, the same bytes draft 22 carries.
+  | { readonly kind: 'paramBlock'; readonly count: bigint; readonly value: Uint8Array };
 
 // ─── draft-22 LOCATION_FILTER (type + 0-4 vi64 fields, no Length) ─────
 
@@ -139,6 +144,11 @@ export const DRAFT22_MESSAGE_PARAM_REGISTRY: MessageParamRegistry = new Map(
   Object.values(MessageParam22).map((d) => [BigInt(d.type), d.kind] as const),
 );
 
+/** Registry built from the draft-23 message-parameter type table. */
+export const DRAFT23_MESSAGE_PARAM_REGISTRY: MessageParamRegistry = new Map(
+  Object.values(MessageParam23).map((d) => [BigInt(d.type), d.kind] as const),
+);
+
 // ─── value length / write / read ─────────────────────────────────────
 
 function paramValueLength(v: MessageParamValue): number {
@@ -155,6 +165,8 @@ function paramValueLength(v: MessageParamValue): number {
       return namespaceTupleLength(v.value);
     case 'locationFilter':
       return v.value.length;
+    case 'paramBlock':
+      return vi64EncodingLength(v.count) + v.value.length;
   }
 }
 
@@ -182,6 +194,11 @@ function writeParamValue(v: MessageParamValue, buf: Uint8Array, offset: number):
     case 'locationFilter':
       buf.set(v.value, offset);
       return v.value.length;
+    case 'paramBlock': {
+      const p = offset + writeVi64(v.count, buf, offset);
+      buf.set(v.value, p);
+      return p + v.value.length - offset;
+    }
   }
 }
 
@@ -189,6 +206,7 @@ function readParamValue(
   kind: ParamValueKind,
   buf: Uint8Array,
   offset: number,
+  registry: MessageParamRegistry,
 ): { value: MessageParamValue; bytesRead: number } {
   switch (kind) {
     case 'uint8': {
@@ -227,7 +245,28 @@ function readParamValue(
       const n = typedLocationFilterLength(buf, offset);
       return { value: { kind: 'locationFilter', value: buf.slice(offset, offset + n) }, bytesRead: n };
     }
+    case 'paramBlock': {
+      const count = readVi64(buf, offset);
+      const start = offset + count.bytesRead;
+      const inner = readParameterSequence(buf, start, registry, count.value);
+      return {
+        value: { kind: 'paramBlock', count: count.value, value: buf.slice(start, start + inner.bytesRead) },
+        bytesRead: count.bytesRead + inner.bytesRead,
+      };
+    }
   }
+}
+
+/**
+ * The number of parameters in a count-less parameter sequence, parsed with
+ * `registry` (the draft-22 FILL_PARAMETERS body re-framed as a draft-23
+ * `paramBlock`).
+ * @throws {ProtocolViolationError} if the sequence does not parse.
+ */
+export function parameterSequenceCount(buf: Uint8Array, registry: MessageParamRegistry): bigint {
+  let n = 0n;
+  for (const values of readParameterSequence(buf, 0, registry).params.values()) n += BigInt(values.length);
+  return n;
 }
 
 // ─── encode-side registry validation ────────────────────────────────
@@ -351,15 +390,15 @@ function readParameterSequence(
     p += delta.bytesRead;
     const type = prevType + delta.value;
     if (type > MAX_VI64) {
-      throw new ProtocolViolationError(`Message parameter Type ${type} exceeds 2^64-1`);
+      throw new ProtocolViolationError(`Message parameter Type ${type} exceeds 2^64-1`, Number(SessionError.DELTA_ENCODING_OVERFLOW));
     }
     prevType = type;
 
     const kind = registry.get(type);
     if (kind === undefined) {
-      throw new ProtocolViolationError(`Unknown message parameter Type 0x${type.toString(16)}`);
+      throw new ProtocolViolationError(`Unknown message parameter Type 0x${type.toString(16)}`, Number(SessionError.INVALID_PARAMETER));
     }
-    const { value, bytesRead } = readParamValue(kind, buf, p);
+    const { value, bytesRead } = readParamValue(kind, buf, p, registry);
     p += bytesRead;
 
     const existing = params.get(type);
