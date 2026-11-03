@@ -208,6 +208,10 @@ var PlayaPlayer = (() => {
     MAX_FILTER_RANGES: 6,
     MAX_REQUEST_UPDATES: 8
   };
+  var SetupOption23 = {
+    ...SetupOption22,
+    MAX_CONTROL_MESSAGE_SIZE: 9
+  };
   var MessageParam18 = {
     OBJECT_DELIVERY_TIMEOUT: { type: 2, kind: "varint" },
     AUTHORIZATION_TOKEN: { type: 3, kind: "bytes" },
@@ -244,6 +248,35 @@ var PlayaPlayer = (() => {
     NEW_GROUP_REQUEST: { type: 50, kind: "varint" },
     TRACK_NAMESPACE_PREFIX: { type: 52, kind: "namespace" },
     INCLUDE_PROPERTIES: { type: 53, kind: "uint8" }
+  };
+  var MessageParam23 = {
+    OBJECT_DELIVERY_TIMEOUT: { type: 2, kind: "varint" },
+    AUTHORIZATION_TOKEN: { type: 3, kind: "bytes" },
+    RENDEZVOUS_TIMEOUT: { type: 4, kind: "varint" },
+    SUBGROUP_DELIVERY_TIMEOUT: { type: 6, kind: "varint" },
+    EXPIRES: { type: 8, kind: "varint" },
+    LARGEST_OBJECT: { type: 9, kind: "location" },
+    FILL_TIMEOUT: { type: 10, kind: "varint" },
+    PAUSED: { type: 17, kind: "uint8" },
+    SUBSCRIBER_PRIORITY: { type: 32, kind: "uint8" },
+    LOCATION_FILTER: { type: 33, kind: "locationFilter" },
+    GROUP_ORDER: { type: 34, kind: "uint8" },
+    FILL_PARAMETERS: { type: 35, kind: "paramBlock" },
+    SUBGROUP_FILTER: { type: 37, kind: "bytes" },
+    OBJECTID_FILTER: { type: 38, kind: "bytes" },
+    PRIORITY_FILTER: { type: 39, kind: "bytes" },
+    OBJECT_PROPERTY_FILTER: { type: 40, kind: "bytes" },
+    TRACK_PROPERTY_FILTER: { type: 41, kind: "bytes" },
+    NEW_GROUP_REQUEST: { type: 50, kind: "varint" },
+    TRACK_NAMESPACE_PREFIX: { type: 52, kind: "namespace" },
+    INCLUDE_PROPERTIES: { type: 53, kind: "uint8" },
+    SUBSCRIBE_TRACKS_ID: { type: 54, kind: "varint" }
+  };
+  var ErrorDetail23 = {
+    /** Odd: length-prefixed bytes holding the Redirect fields (§9.4.2.1). */
+    REDIRECT: 1,
+    /** Even: the vi64 Type of a Mandatory Track Property not understood (§9.4.2.2). */
+    UNSUPPORTED_PROPERTY: 2
   };
 
   // ../transport/dist/data/codes-18.js
@@ -329,6 +362,8 @@ var PlayaPlayer = (() => {
     INVALID_REQUEST_ID: varint(4),
     DUPLICATE_TRACK_ALIAS: varint(5),
     KEY_VALUE_FORMATTING_ERROR: varint(6),
+    /** draft-23 §12.2: the draft-23 name of 0x6 (was KEY_VALUE_FORMATTING_ERROR). */
+    MALFORMED_KEY_VALUE: varint(6),
     TOO_MANY_REQUESTS: varint(7),
     INVALID_PATH: varint(8),
     MALFORMED_PATH: varint(9),
@@ -344,7 +379,22 @@ var PlayaPlayer = (() => {
     INVALID_AUTHORITY: varint(25),
     MALFORMED_AUTHORITY: varint(26),
     /** draft-22: more than MAX_REQUEST_UPDATES updates outstanding on one request. */
-    TOO_MANY_REQUEST_UPDATES: varint(27)
+    TOO_MANY_REQUEST_UPDATES: varint(27),
+    // draft-23 §12.2: specific codes that replace most uses of PROTOCOL_VIOLATION.
+    // 0x200-0x2FF are data plane, 0x300-0x3FF control plane, 0x400-0x4FF either.
+    INVALID_STREAM_HEADER: varint(512),
+    MALFORMED_OBJECT: varint(513),
+    INVALID_OBJECT_STATUS: varint(514),
+    TRUNCATED_OBJECT: varint(515),
+    MALFORMED_MESSAGE: varint(768),
+    INVALID_FIELD: varint(769),
+    INVALID_TRACK_NAMESPACE: varint(770),
+    UNEXPECTED_MESSAGE: varint(771),
+    ROLE_VIOLATION: varint(772),
+    INVALID_PARAMETER: varint(773),
+    CLOSED_CONTROL_STREAM: varint(774),
+    DELTA_ENCODING_OVERFLOW: varint(1024),
+    FIELD_LENGTH_EXCEEDED: varint(1025)
   };
   var RequestError = {
     INTERNAL_ERROR: varint(0),
@@ -425,6 +475,26 @@ var PlayaPlayer = (() => {
     CONFLICTING_FILTERS: varint(53),
     INVALID_FILTER: varint(54)
   };
+  var RequestError23 = {
+    INTERNAL_ERROR: varint(0),
+    UNAUTHORIZED: varint(1),
+    TIMEOUT: varint(2),
+    NOT_SUPPORTED: varint(3),
+    MALFORMED_AUTH_TOKEN: varint(4),
+    EXPIRED_AUTH_TOKEN: varint(5),
+    GOING_AWAY: varint(6),
+    EXCESSIVE_LOAD: varint(9),
+    UNAVAILABLE: varint(10),
+    DOES_NOT_EXIST: varint(16),
+    INVALID_RANGE: varint(17),
+    MALFORMED_TRACK: varint(18),
+    UNINTERESTED: varint(32),
+    NAMESPACE_TOO_LARGE: varint(49),
+    UNSUPPORTED_EXTENSION: varint(51),
+    REDIRECT: varint(52),
+    CONFLICTING_FILTERS: varint(53),
+    INVALID_FILTER: varint(54)
+  };
   var PublishDoneCode18 = {
     INTERNAL_ERROR: varint(0),
     UNAUTHORIZED: varint(1),
@@ -434,6 +504,29 @@ var PlayaPlayer = (() => {
     TOO_FAR_BEHIND: varint(5),
     EXPIRED: varint(6),
     UPDATE_FAILED: varint(8),
+    EXCESSIVE_LOAD: varint(9),
+    MALFORMED_TRACK: varint(18)
+  };
+  var PublishDoneCode23 = {
+    INTERNAL_ERROR: varint(0),
+    UNAUTHORIZED: varint(1),
+    TRACK_ENDED: varint(2),
+    GOING_AWAY: varint(4),
+    TOO_FAR_BEHIND: varint(5),
+    EXPIRED: varint(6),
+    EXPIRED_AUTH_TOKEN: varint(7),
+    UPDATE_FAILED: varint(8),
+    EXCESSIVE_LOAD: varint(9),
+    MALFORMED_TRACK: varint(18)
+  };
+  var StreamResetCode23 = {
+    INTERNAL_ERROR: varint(0),
+    CANCELLED: varint(1),
+    DELIVERY_TIMEOUT: varint(2),
+    SESSION_CLOSED: varint(3),
+    GOING_AWAY: varint(4),
+    TOO_FAR_BEHIND: varint(5),
+    EXPIRED_AUTH_TOKEN: varint(7),
     EXCESSIVE_LOAD: varint(9),
     MALFORMED_TRACK: varint(18)
   };
@@ -450,9 +543,16 @@ var PlayaPlayer = (() => {
     MALFORMED_TRACK: varint(18)
   };
   var ProtocolViolationError = class extends Error {
-    constructor(message) {
+    /**
+     * The session termination code to close with, when a draft defines one more
+     * specific than PROTOCOL_VIOLATION (draft-23 §12.2). Absent on drafts before
+     * 23, where every violation closes with PROTOCOL_VIOLATION (0x3).
+     */
+    code;
+    constructor(message, code) {
       super(message);
       this.name = "ProtocolViolationError";
+      this.code = code;
     }
   };
 
@@ -573,6 +673,9 @@ var PlayaPlayer = (() => {
     }
   }
   function validateFullTrackName(namespace, trackName, opts = {}) {
+    if (opts.forbidEmptyTrackName && trackName.length === 0) {
+      throw new ProtocolViolationError("Track Name must be at least 1 byte (draft-23 \xA72.4.1)", 3);
+    }
     validateTrackNamespace(namespace, opts.allowEmptyNamespace ? { allowEmpty: true } : {});
     const totalLength = namespaceByteLength(namespace) + trackName.length;
     if (totalLength > MAX_NAME_LENGTH) {
@@ -653,6 +756,7 @@ var PlayaPlayer = (() => {
   }
   var DEFAULT_MESSAGE_PARAM_REGISTRY = new Map(Object.values(MessageParam18).map((d) => [BigInt(d.type), d.kind]));
   var DRAFT22_MESSAGE_PARAM_REGISTRY = new Map(Object.values(MessageParam22).map((d) => [BigInt(d.type), d.kind]));
+  var DRAFT23_MESSAGE_PARAM_REGISTRY = new Map(Object.values(MessageParam23).map((d) => [BigInt(d.type), d.kind]));
   function paramValueLength(v) {
     switch (v.kind) {
       case "uint8":
@@ -666,6 +770,8 @@ var PlayaPlayer = (() => {
       case "namespace":
         return namespaceTupleLength(v.value);
       case "locationFilter":
+        return v.value.length;
+      case "paramBlock":
         return v.value.length;
     }
   }
@@ -693,9 +799,12 @@ var PlayaPlayer = (() => {
       case "locationFilter":
         buf.set(v.value, offset);
         return v.value.length;
+      case "paramBlock":
+        buf.set(v.value, offset);
+        return v.value.length;
     }
   }
-  function readParamValue(kind, buf, offset) {
+  function readParamValue(kind, buf, offset, registry) {
     switch (kind) {
       case "uint8": {
         const { value, bytesRead } = readUint8(buf, offset);
@@ -732,6 +841,10 @@ var PlayaPlayer = (() => {
       case "locationFilter": {
         const n = typedLocationFilterLength(buf, offset);
         return { value: { kind: "locationFilter", value: buf.slice(offset, offset + n) }, bytesRead: n };
+      }
+      case "paramBlock": {
+        const { bytesRead } = decodeMessageParams18(buf, offset, registry);
+        return { value: { kind: "paramBlock", value: buf.slice(offset, offset + bytesRead) }, bytesRead };
       }
     }
   }
@@ -790,14 +903,14 @@ var PlayaPlayer = (() => {
       p += delta.bytesRead;
       const type = prevType + delta.value;
       if (type > MAX_VI64) {
-        throw new ProtocolViolationError(`Message parameter Type ${type} exceeds 2^64-1`);
+        throw new ProtocolViolationError(`Message parameter Type ${type} exceeds 2^64-1`, Number(SessionError.DELTA_ENCODING_OVERFLOW));
       }
       prevType = type;
       const kind = registry.get(type);
       if (kind === void 0) {
-        throw new ProtocolViolationError(`Unknown message parameter Type 0x${type.toString(16)}`);
+        throw new ProtocolViolationError(`Unknown message parameter Type 0x${type.toString(16)}`, Number(SessionError.INVALID_PARAMETER));
       }
-      const { value, bytesRead } = readParamValue(kind, buf, p);
+      const { value, bytesRead } = readParamValue(kind, buf, p, registry);
       p += bytesRead;
       const existing = params.get(type);
       if (existing)
@@ -828,14 +941,21 @@ var PlayaPlayer = (() => {
   }
 
   // ../transport/dist/versions.js
+  var DEFAULT_DRAFT_VERSION = 23;
   function isWiredDraft(v) {
-    return v === 14 || v === 16 || v === 18 || v === 22;
+    return v === 14 || v === 16 || v === 18 || v === 22 || v === 23;
   }
   function isRequestStreamDraft(v) {
     return v !== void 0 && v >= 18;
   }
   function isDraft22(v) {
     return v !== void 0 && v >= 22;
+  }
+  function isDraft23(v) {
+    return v !== void 0 && v >= 23;
+  }
+  function requestStreamDraftOf(v) {
+    return v === 22 || v === 23 ? v : 18;
   }
 
   // ../transport/dist/control/subscription-filter.js
@@ -3594,8 +3714,26 @@ var PlayaPlayer = (() => {
     }
   };
 
+  // ../transport/dist/control/control-message-size.js
+  var MAX_CONTROL_MESSAGE_SIZE = 65535;
+  function parseMaxControlMessageSize(value) {
+    let size;
+    try {
+      size = readVi64(value, 0);
+    } catch {
+      return "malformed";
+    }
+    if (size.bytesRead !== value.length)
+      return "malformed";
+    return size.value < BigInt(MAX_CONTROL_MESSAGE_SIZE) ? "too-small" : size.value;
+  }
+
   // ../transport/dist/control/draft18-codec.js
   var REDIRECT_ERROR_CODE = 0x34n;
+  var UNSUPPORTED_EXTENSION_ERROR_CODE = 0x33n;
+  var ERROR_DETAIL_REDIRECT = BigInt(ErrorDetail23.REDIRECT);
+  var ERROR_DETAIL_UNSUPPORTED_PROPERTY = BigInt(ErrorDetail23.UNSUPPORTED_PROPERTY);
+  var ERROR_DETAIL_SINGLETONS = /* @__PURE__ */ new Set([ERROR_DETAIL_REDIRECT]);
   function trackPropsOf(msg) {
     return msg.trackProperties ?? msg.trackExtensions ?? /* @__PURE__ */ new Map();
   }
@@ -3687,7 +3825,8 @@ var PlayaPlayer = (() => {
     BigInt(SetupOption18.PATH),
     BigInt(SetupOption18.AUTHORITY),
     BigInt(SetupOption18.MAX_AUTH_TOKEN_CACHE_SIZE),
-    BigInt(SetupOption18.MOQT_IMPLEMENTATION)
+    BigInt(SetupOption18.MOQT_IMPLEMENTATION),
+    BigInt(SetupOption23.MAX_CONTROL_MESSAGE_SIZE)
   ]);
   function setupValueLength(type, value) {
     if (type % 2n === 0n) {
@@ -3705,13 +3844,16 @@ var PlayaPlayer = (() => {
     return type % 2n === 0n ? writeVi64(value, buf, offset) : writeVi64Bytes(value, buf, offset);
   }
   function encodeSetupOptionMap18(options) {
+    return encodeKvps18(options, SETUP_SINGLETONS, "Setup Option");
+  }
+  function encodeKvps18(options, singletons, what) {
     const entries = [...options.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
     const flat = [];
     let prev = 0n;
     let len = 0;
     for (const [type, values] of entries) {
-      if (SETUP_SINGLETONS.has(type) && values.length > 1) {
-        throw new ProtocolViolationError(`Setup Option 0x${type.toString(16)} must not be repeated`);
+      if (singletons.has(type) && values.length > 1) {
+        throw new ProtocolViolationError(`${what} 0x${type.toString(16)} must not be repeated`);
       }
       for (const value of values) {
         const delta = type - prev;
@@ -3728,16 +3870,17 @@ var PlayaPlayer = (() => {
     }
     return buf;
   }
-  function decodeSetupOptionMap18(payload) {
+  function decodeSetupOptionMap18(payload, offset = 0) {
     const out = /* @__PURE__ */ new Map();
-    let p = 0;
+    let p = offset;
     let prev = 0n;
     while (p < payload.length) {
       const dt = readVi64(payload, p);
       p += dt.bytesRead;
       const type = prev + dt.value;
-      if (type > MAX_VI64)
-        throw new ProtocolViolationError(`Setup Option type ${type} exceeds 2^64-1`);
+      if (type > MAX_VI64) {
+        throw new ProtocolViolationError(`Setup Option type ${type} exceeds 2^64-1`, Number(SessionError.DELTA_ENCODING_OVERFLOW));
+      }
       prev = type;
       let value;
       if (type % 2n === 0n) {
@@ -3788,6 +3931,14 @@ var PlayaPlayer = (() => {
         if (!(v instanceof Uint8Array))
           throw new ProtocolViolationError(`Parameter 0x${type.toString(16)} expects a LOCATION_FILTER`);
         return { kind: "locationFilter", value: v };
+      case "paramBlock": {
+        if (!(v instanceof Uint8Array))
+          throw new ProtocolViolationError(`Parameter 0x${type.toString(16)} expects a parameter block`);
+        if (decodeMessageParams18(v, 0, registry).bytesRead !== v.length) {
+          throw new ProtocolViolationError(`Parameter 0x${type.toString(16)} block has trailing bytes`);
+        }
+        return { kind: "paramBlock", value: v };
+      }
       case "location":
         if (!isLocation(v))
           throw new ProtocolViolationError(`Parameter 0x${type.toString(16)} expects Location`);
@@ -3803,6 +3954,10 @@ var PlayaPlayer = (() => {
       }
     }
   }
+  var PAUSED_TYPE = 0x11n;
+  function usesPaused(registry) {
+    return registry.has(PAUSED_TYPE) && !registry.has(MessageParam.FORWARD);
+  }
   function paramsToTyped(params, registry) {
     const out = /* @__PURE__ */ new Map();
     for (const [type, values] of params) {
@@ -3810,6 +3965,10 @@ var PlayaPlayer = (() => {
         const value = values[0];
         if (values.length !== 1 || typeof value !== "bigint" || value !== 0n && value !== 1n) {
           throw new ProtocolViolationError("FORWARD must be exactly one value, 0 or 1");
+        }
+        if (usesPaused(registry)) {
+          out.set(PAUSED_TYPE, [{ kind: "uint8", value: value === 0n ? 1 : 0 }]);
+          continue;
         }
       }
       out.set(type, values.map((v) => toTypedParam(type, v, registry)));
@@ -3824,6 +3983,7 @@ var PlayaPlayer = (() => {
         return v.value;
       case "bytes":
       case "locationFilter":
+      case "paramBlock":
         return v.value;
       case "location":
         return { group: v.group, object: v.object };
@@ -3833,12 +3993,25 @@ var PlayaPlayer = (() => {
   }
   function typedToParams(typed) {
     const out = /* @__PURE__ */ new Map();
-    for (const [type, values] of typed)
+    for (const [type, values] of typed) {
+      if (type === PAUSED_TYPE) {
+        const v = values[0];
+        if (values.length !== 1 || v?.kind !== "uint8" || v.value > 1) {
+          throw new ProtocolViolationError("PAUSED must be exactly one value, 0 or 1", Number(SessionError.INVALID_PARAMETER));
+        }
+        out.set(MessageParam.FORWARD, [BigInt(1 - v.value)]);
+        continue;
+      }
       out.set(type, values.map(fromTypedParam));
+    }
     return out;
   }
   var notImplemented = (what) => {
     throw new ProtocolViolationError(`Draft18Codec: ${what} is not yet implemented`);
+  };
+  var MALFORMED_MESSAGE = Number(SessionError.MALFORMED_MESSAGE);
+  var unexpectedMessage = (type) => {
+    throw new ProtocolViolationError(`Unknown draft-23 control message type 0x${type.toString(16)}`, Number(SessionError.UNEXPECTED_MESSAGE));
   };
   var Draft18Codec = class {
     version;
@@ -3851,7 +4024,13 @@ var PlayaPlayer = (() => {
     }
     /** The message-parameter table of this codec's draft. */
     get paramRegistry() {
-      return this.version === 22 ? DRAFT22_MESSAGE_PARAM_REGISTRY : DEFAULT_MESSAGE_PARAM_REGISTRY;
+      if (isDraft23(this.version))
+        return DRAFT23_MESSAGE_PARAM_REGISTRY;
+      return isDraft22(this.version) ? DRAFT22_MESSAGE_PARAM_REGISTRY : DEFAULT_MESSAGE_PARAM_REGISTRY;
+    }
+    /** Full Track Name rules: draft 23 forbids an empty Track Name (§2.4.1). */
+    get fullTrackNameRules() {
+      return { allowEmptyNamespace: true, forbidEmptyTrackName: isDraft23(this.version) };
     }
     encode(msg) {
       switch (msg.type) {
@@ -3868,8 +4047,11 @@ var PlayaPlayer = (() => {
         case "REQUEST_ERROR":
           return this.frame(ControlMessageType18.REQUEST_ERROR, this.encodeRequestError(msg));
         case "FETCH":
-          return this.frame(ControlMessageType18.FETCH, this.version === 22 ? this.encodeFetch22(msg) : this.encodeFetch(msg));
+          return this.frame(ControlMessageType18.FETCH, isDraft22(this.version) ? this.encodeFetch22(msg) : this.encodeFetch(msg));
         case "FETCH_OK":
+          if (isDraft23(this.version)) {
+            throw new ProtocolViolationError("Draft18Codec: draft 23 answers a FETCH with REQUEST_OK, not FETCH_OK");
+          }
           return this.frame(ControlMessageType18.FETCH_OK, this.encodeFetchOk(msg));
         case "TRACK_STATUS":
           return this.frame(ControlMessageType18.TRACK_STATUS, this.encodeTrackStatus(msg));
@@ -3884,7 +4066,7 @@ var PlayaPlayer = (() => {
         case "SUBSCRIBE_TRACKS":
           return this.frame(ControlMessageType18.SUBSCRIBE_TRACKS, this.encodeNamespacePrefixRequest(msg.requestId, msg.trackNamespacePrefix, msg.parameters));
         case "NAMESPACE":
-          return this.frame(ControlMessageType18.NAMESPACE, encodeTuple(msg.trackNamespaceSuffix));
+          return this.frame(ControlMessageType18.NAMESPACE, this.encodeNamespace(msg));
         case "NAMESPACE_DONE":
           return this.frame(ControlMessageType18.NAMESPACE_DONE, encodeTuple(msg.trackNamespaceSuffix));
         case "PUBLISH_BLOCKED":
@@ -3892,7 +4074,7 @@ var PlayaPlayer = (() => {
         case "GOAWAY":
           return this.frame(ControlMessageType18.GOAWAY, this.encodeGoaway(msg));
         case "PUBLISH_STATE_NOTIFY":
-          if (this.version !== 22) {
+          if (!isDraft22(this.version)) {
             throw new ProtocolViolationError("Draft18Codec: PUBLISH_STATE_NOTIFY exists only in draft 22");
           }
           return this.frame(ControlMessageType18.PUBLISH_STATE_NOTIFY, this.encodeParamsOnly(msg.parameters));
@@ -3903,79 +4085,131 @@ var PlayaPlayer = (() => {
       }
     }
     decode(buf, offset) {
-      const { value: type, bytesRead: typeBytes } = readVi64(buf, offset);
-      const lenOff = offset + typeBytes;
-      if (lenOff + 2 > buf.length)
-        throw new ProtocolViolationError("draft-18 control frame: truncated length");
-      const payloadLen = buf[lenOff] << 8 | buf[lenOff + 1];
-      const payloadOff = lenOff + 2;
-      if (payloadOff + payloadLen > buf.length)
-        throw new ProtocolViolationError("draft-18 control frame: truncated payload");
-      const payload = buf.subarray(payloadOff, payloadOff + payloadLen);
-      const total = typeBytes + 2 + payloadLen;
-      switch (Number(type)) {
-        case ControlMessageType18.SETUP:
-          return { message: { type: "SETUP", setupOptions: decodeSetupOptionMap18(payload) }, bytesRead: total };
-        case ControlMessageType18.SUBSCRIBE:
-          return { message: this.decodeSubscribe(payload), bytesRead: total };
-        case ControlMessageType18.REQUEST_UPDATE:
-          return { message: this.decodeRequestUpdate(payload), bytesRead: total };
-        case ControlMessageType18.SUBSCRIBE_OK:
-          return { message: this.decodeSubscribeOk(payload), bytesRead: total };
-        case ControlMessageType18.REQUEST_OK:
-          return { message: this.decodeRequestOk(payload), bytesRead: total };
-        case ControlMessageType18.REQUEST_ERROR:
-          return { message: this.decodeRequestError(payload), bytesRead: total };
-        case ControlMessageType18.FETCH:
-          return { message: this.version === 22 ? this.decodeFetch22(payload) : this.decodeFetch(payload), bytesRead: total };
-        case ControlMessageType18.FETCH_OK:
-          return { message: this.decodeFetchOk(payload), bytesRead: total };
-        case ControlMessageType18.TRACK_STATUS:
-          return { message: this.decodeTrackStatus(payload), bytesRead: total };
-        case ControlMessageType18.PUBLISH_NAMESPACE:
-          return { message: this.decodePublishNamespace(payload), bytesRead: total };
-        case ControlMessageType18.PUBLISH:
-          return { message: this.decodePublish(payload), bytesRead: total };
-        case ControlMessageType18.PUBLISH_DONE:
-          return { message: this.decodePublishDone(payload), bytesRead: total };
-        case ControlMessageType18.SUBSCRIBE_NAMESPACE:
-          return { message: this.decodeSubscribeNamespace(payload), bytesRead: total };
-        case ControlMessageType18.SUBSCRIBE_TRACKS:
-          return { message: this.decodeSubscribeTracks(payload), bytesRead: total };
-        case ControlMessageType18.NAMESPACE:
-          return { message: this.decodeNamespaceSuffix("NAMESPACE", payload), bytesRead: total };
-        case ControlMessageType18.NAMESPACE_DONE:
-          return { message: this.decodeNamespaceSuffix("NAMESPACE_DONE", payload), bytesRead: total };
-        case ControlMessageType18.PUBLISH_BLOCKED:
-          return { message: this.decodePublishBlocked(payload), bytesRead: total };
-        case ControlMessageType18.GOAWAY:
-          return { message: this.decodeGoaway(payload), bytesRead: total };
-        case ControlMessageType18.PUBLISH_STATE_NOTIFY:
-          if (this.version !== 22)
-            return notImplemented(`decode of type 0x${type.toString(16)}`);
-          return {
-            message: { type: "PUBLISH_STATE_NOTIFY", parameters: this.decodeParamsOnly(payload, "PUBLISH_STATE_NOTIFY") },
-            bytesRead: total
-          };
-        default:
-          return notImplemented(`decode of type 0x${type.toString(16)}`);
+      const header = this.readHeader(buf, offset);
+      if (header === void 0) {
+        throw new ProtocolViolationError("draft-18 control frame: truncated length", MALFORMED_MESSAGE);
+      }
+      if (header.payloadOff + header.payloadLen > buf.length) {
+        throw new ProtocolViolationError("draft-18 control frame: truncated payload", MALFORMED_MESSAGE);
+      }
+      const payload = buf.subarray(header.payloadOff, header.payloadOff + header.payloadLen);
+      const bytesRead = header.payloadOff + header.payloadLen - offset;
+      if (!isDraft23(this.version))
+        return { message: this.decodeBody(header.type, payload), bytesRead };
+      try {
+        return { message: this.decodeBody(header.type, payload), bytesRead };
+      } catch (err) {
+        if (err instanceof ProtocolViolationError && err.code !== void 0)
+          throw err;
+        if (err instanceof ProtocolViolationError || err instanceof RangeError) {
+          throw new ProtocolViolationError(err.message, MALFORMED_MESSAGE);
+        }
+        throw err;
       }
     }
+    decodeBody(type, payload) {
+      switch (Number(type)) {
+        case ControlMessageType18.SETUP:
+          return { type: "SETUP", setupOptions: decodeSetupOptionMap18(payload) };
+        case ControlMessageType18.SUBSCRIBE:
+          return this.decodeSubscribe(payload);
+        case ControlMessageType18.REQUEST_UPDATE:
+          return this.decodeRequestUpdate(payload);
+        case ControlMessageType18.SUBSCRIBE_OK:
+          return this.decodeSubscribeOk(payload);
+        case ControlMessageType18.REQUEST_OK:
+          return this.decodeRequestOk(payload);
+        case ControlMessageType18.REQUEST_ERROR:
+          return this.decodeRequestError(payload);
+        case ControlMessageType18.FETCH:
+          return isDraft22(this.version) ? this.decodeFetch22(payload) : this.decodeFetch(payload);
+        case ControlMessageType18.FETCH_OK:
+          if (isDraft23(this.version))
+            return unexpectedMessage(type);
+          return this.decodeFetchOk(payload);
+        case ControlMessageType18.TRACK_STATUS:
+          return this.decodeTrackStatus(payload);
+        case ControlMessageType18.PUBLISH_NAMESPACE:
+          return this.decodePublishNamespace(payload);
+        case ControlMessageType18.PUBLISH:
+          return this.decodePublish(payload);
+        case ControlMessageType18.PUBLISH_DONE:
+          return this.decodePublishDone(payload);
+        case ControlMessageType18.SUBSCRIBE_NAMESPACE:
+          return this.decodeSubscribeNamespace(payload);
+        case ControlMessageType18.SUBSCRIBE_TRACKS:
+          return this.decodeSubscribeTracks(payload);
+        case ControlMessageType18.NAMESPACE:
+          return isDraft23(this.version) ? this.decodeNamespace23(payload) : this.decodeNamespaceSuffix("NAMESPACE", payload);
+        case ControlMessageType18.NAMESPACE_DONE:
+          return this.decodeNamespaceSuffix("NAMESPACE_DONE", payload);
+        case ControlMessageType18.PUBLISH_BLOCKED:
+          return this.decodePublishBlocked(payload);
+        case ControlMessageType18.GOAWAY:
+          return this.decodeGoaway(payload);
+        case ControlMessageType18.PUBLISH_STATE_NOTIFY:
+          if (!isDraft22(this.version))
+            return this.unknownMessage(type);
+          return { type: "PUBLISH_STATE_NOTIFY", parameters: this.decodeParamsOnly(payload, "PUBLISH_STATE_NOTIFY") };
+        default:
+          return this.unknownMessage(type);
+      }
+    }
+    /** An unknown message type: UNEXPECTED_MESSAGE on draft 23 (§9). */
+    unknownMessage(type) {
+      if (isDraft23(this.version))
+        return unexpectedMessage(type);
+      return notImplemented(`decode of type 0x${type.toString(16)}`);
+    }
     peekFrameSize(buf) {
+      const header = this.readHeader(buf, 0);
+      return header === void 0 ? void 0 : header.payloadOff + header.payloadLen;
+    }
+    // ── framing ──────────────────────────────────────────────────────
+    // Type (vi64) + Length + Payload. The Length is 16 bits through draft 22 and
+    // a vi64 from draft 23 (§9), bounded by MAX_CONTROL_MESSAGE_SIZE.
+    /**
+     * Read a frame header at `offset`, or `undefined` if its bytes have not all
+     * arrived. The payload itself may still be incomplete.
+     * @throws {ProtocolViolationError} FIELD_LENGTH_EXCEEDED for a draft-23 Length
+     *   above our MAX_CONTROL_MESSAGE_SIZE, before any of the payload is buffered.
+     */
+    readHeader(buf, offset) {
       let type;
       try {
-        type = readVi64(buf, 0);
+        type = readVi64(buf, offset);
       } catch {
         return void 0;
       }
-      const headerLen = type.bytesRead + 2;
-      if (buf.length < headerLen)
+      const lenOff = offset + type.bytesRead;
+      if (!isDraft23(this.version)) {
+        if (lenOff + 2 > buf.length)
+          return void 0;
+        return { type: type.value, payloadOff: lenOff + 2, payloadLen: buf[lenOff] << 8 | buf[lenOff + 1] };
+      }
+      let len;
+      try {
+        len = readVi64(buf, lenOff);
+      } catch {
         return void 0;
-      const payloadLen = buf[type.bytesRead] << 8 | buf[type.bytesRead + 1];
-      return headerLen + payloadLen;
+      }
+      if (len.value > BigInt(MAX_CONTROL_MESSAGE_SIZE)) {
+        throw new ProtocolViolationError(`control message Length ${len.value} exceeds MAX_CONTROL_MESSAGE_SIZE ${MAX_CONTROL_MESSAGE_SIZE}`, Number(SessionError.FIELD_LENGTH_EXCEEDED));
+      }
+      return { type: type.value, payloadOff: lenOff + len.bytesRead, payloadLen: Number(len.value) };
     }
-    // ── framing ──────────────────────────────────────────────────────
     frame(type, payload) {
+      if (isDraft23(this.version)) {
+        if (payload.length > MAX_CONTROL_MESSAGE_SIZE) {
+          throw new ProtocolViolationError(`draft-23 control payload exceeds MAX_CONTROL_MESSAGE_SIZE ${MAX_CONTROL_MESSAGE_SIZE}`);
+        }
+        const length = BigInt(payload.length);
+        const out2 = new Uint8Array(vi64EncodingLength(BigInt(type)) + vi64EncodingLength(length) + payload.length);
+        let p2 = writeVi64(BigInt(type), out2, 0);
+        p2 += writeVi64(length, out2, p2);
+        out2.set(payload, p2);
+        return out2;
+      }
       if (payload.length > 65535)
         throw new ProtocolViolationError("draft-18 control payload exceeds 2^16-1");
       const out = new Uint8Array(vi64EncodingLength(BigInt(type)) + 2 + payload.length);
@@ -3987,7 +4221,7 @@ var PlayaPlayer = (() => {
     }
     // ── SUBSCRIBE (request, §10.7) ──────────────────────────────────────
     encodeSubscribe(msg) {
-      validateFullTrackName(msg.trackNamespace, msg.trackName, { allowEmptyNamespace: true });
+      validateFullTrackName(msg.trackNamespace, msg.trackName, this.fullTrackNameRules);
       const typed = paramsToTyped(msg.parameters, this.paramRegistry);
       const len = vi64EncodingLength(msg.requestId) + vi64TupleLength(msg.trackNamespace) + vi64BytesLength(msg.trackName) + messageParams18EncodingLength(typed, this.paramRegistry);
       const buf = new Uint8Array(len);
@@ -4010,7 +4244,7 @@ var PlayaPlayer = (() => {
       if (p !== payload.length) {
         throw new ProtocolViolationError("SUBSCRIBE: unexpected trailing bytes after parameters");
       }
-      validateFullTrackName(ns.value, name.value, { allowEmptyNamespace: true });
+      validateFullTrackName(ns.value, name.value, this.fullTrackNameRules);
       return {
         type: "SUBSCRIBE",
         requestId: rid.value,
@@ -4023,7 +4257,7 @@ var PlayaPlayer = (() => {
     // First and only message on a new request stream; carries no delivery params.
     // Response is REQUEST_OK (a.k.a. TRACK_STATUS_OK) / REQUEST_ERROR.
     encodeTrackStatus(msg) {
-      validateFullTrackName(msg.trackNamespace, msg.trackName, { allowEmptyNamespace: true });
+      validateFullTrackName(msg.trackNamespace, msg.trackName, this.fullTrackNameRules);
       const typed = paramsToTyped(msg.parameters, this.paramRegistry);
       const len = vi64EncodingLength(msg.requestId) + vi64TupleLength(msg.trackNamespace) + vi64BytesLength(msg.trackName) + messageParams18EncodingLength(typed, this.paramRegistry);
       const buf = new Uint8Array(len);
@@ -4046,7 +4280,7 @@ var PlayaPlayer = (() => {
       if (p !== payload.length) {
         throw new ProtocolViolationError("TRACK_STATUS: unexpected trailing bytes after parameters");
       }
-      validateFullTrackName(ns.value, name.value, { allowEmptyNamespace: true });
+      validateFullTrackName(ns.value, name.value, this.fullTrackNameRules);
       return {
         type: "TRACK_STATUS",
         requestId: rid.value,
@@ -4093,7 +4327,7 @@ var PlayaPlayer = (() => {
     // Request ID + namespace tuple + Track Name + Track Alias (vi64) + params +
     // Track Properties (§2.5, trailing field; empty → zero bytes).
     encodePublish(msg) {
-      validateFullTrackName(msg.trackNamespace, msg.trackName, { allowEmptyNamespace: true });
+      validateFullTrackName(msg.trackNamespace, msg.trackName, this.fullTrackNameRules);
       const typed = paramsToTyped(msg.parameters, this.paramRegistry);
       const len = vi64EncodingLength(msg.requestId) + vi64TupleLength(msg.trackNamespace) + vi64BytesLength(msg.trackName) + vi64EncodingLength(msg.trackAlias) + messageParams18EncodingLength(typed, this.paramRegistry) + trackProperties18EncodingLength(trackPropsOf(msg));
       const buf = new Uint8Array(len);
@@ -4121,7 +4355,7 @@ var PlayaPlayer = (() => {
       p += params.bytesRead;
       const props = decodeTrackProperties18(payload, p);
       p += props.bytesRead;
-      validateFullTrackName(ns.value, name.value, { allowEmptyNamespace: true });
+      validateFullTrackName(ns.value, name.value, this.fullTrackNameRules);
       return {
         type: "PUBLISH",
         requestId: rid.value,
@@ -4229,7 +4463,7 @@ var PlayaPlayer = (() => {
         throw new ProtocolViolationError(`GOAWAY New Session URI length ${uri.length} exceeds maximum ${GOAWAY_MAX_URI_LENGTH} bytes`);
       }
       const timeout = msg.timeout ?? 0n;
-      const requestId = this.version === 22 ? void 0 : msg.requestId;
+      const requestId = isDraft22(this.version) ? void 0 : msg.requestId;
       let len = vi64BytesLength(uri) + vi64EncodingLength(timeout);
       if (requestId !== void 0)
         len += vi64EncodingLength(requestId);
@@ -4250,13 +4484,13 @@ var PlayaPlayer = (() => {
       const timeout = readVi64(payload, p);
       p += timeout.bytesRead;
       let requestId;
-      if (p < payload.length && this.version !== 22) {
+      if (p < payload.length && !isDraft22(this.version)) {
         const rid = readVi64(payload, p);
         p += rid.bytesRead;
         requestId = rid.value;
       }
       if (p !== payload.length) {
-        throw new ProtocolViolationError(this.version === 22 ? `GOAWAY: ${payload.length - p} trailing bytes after Timeout` : `GOAWAY: ${payload.length - p} trailing bytes after Request ID`);
+        throw new ProtocolViolationError(isDraft22(this.version) ? `GOAWAY: ${payload.length - p} trailing bytes after Timeout` : `GOAWAY: ${payload.length - p} trailing bytes after Request ID`);
       }
       const msg = {
         type: "GOAWAY",
@@ -4273,6 +4507,25 @@ var PlayaPlayer = (() => {
         throw new ProtocolViolationError(`${type}: unexpected trailing bytes after namespace suffix`);
       }
       return { type, trackNamespaceSuffix: suffix.value };
+    }
+    /** NAMESPACE: the suffix, then (draft 23, §9.15) a Parameters block. */
+    encodeNamespace(msg) {
+      const suffix = encodeTuple(msg.trackNamespaceSuffix);
+      if (!isDraft23(this.version))
+        return suffix;
+      const params = encodeMessageParams18(paramsToTyped(msg.parameters ?? /* @__PURE__ */ new Map(), this.paramRegistry), this.paramRegistry);
+      const buf = new Uint8Array(suffix.length + params.length);
+      buf.set(suffix, 0);
+      buf.set(params, suffix.length);
+      return buf;
+    }
+    decodeNamespace23(payload) {
+      const suffix = readVi64Tuple(payload, 0);
+      const params = decodeMessageParams18(payload, suffix.bytesRead, this.paramRegistry);
+      if (suffix.bytesRead + params.bytesRead !== payload.length) {
+        throw new ProtocolViolationError("NAMESPACE: unexpected trailing bytes after Parameters");
+      }
+      return { type: "NAMESPACE", trackNamespaceSuffix: suffix.value, parameters: typedToParams(params.params) };
     }
     // ── REQUEST_UPDATE (request, §10.9) ─────────────────────────────────
     // Keeps its OWN Request ID; the "Existing Request ID" (target) is omitted —
@@ -4342,6 +4595,8 @@ var PlayaPlayer = (() => {
     }
     // ── REQUEST_ERROR (response, §10.6 — no Request ID) ────────────────
     encodeRequestError(msg) {
+      if (isDraft23(this.version))
+        return this.encodeRequestError23(msg);
       const isRedirect = msg.errorCode === REDIRECT_ERROR_CODE;
       if (msg.redirect && !isRedirect) {
         throw new ProtocolViolationError("REQUEST_ERROR carries a Redirect but Error Code is not REDIRECT (0x34)");
@@ -4374,6 +4629,8 @@ var PlayaPlayer = (() => {
       p += ri.bytesRead;
       const reason = readReasonPhrase18(payload, p);
       p += reason.bytesRead;
+      if (isDraft23(this.version))
+        return this.decodeRequestError23(ec.value, ri.value, reason.value, payload, p);
       let redirect;
       if (ec.value === REDIRECT_ERROR_CODE) {
         const uri = readVi64Bytes(payload, p);
@@ -4400,6 +4657,75 @@ var PlayaPlayer = (() => {
         ...redirect ? { redirect } : {}
       };
     }
+    // draft-23 §9.4.2: Error Details are Key-Value-Pairs to the end of the
+    // message. REDIRECT (0x01) holds draft 22's Redirect fields;
+    // UNSUPPORTED_PROPERTY (0x02) a Property Type, and may repeat.
+    encodeRequestError23(msg) {
+      const isRedirect = msg.errorCode === REDIRECT_ERROR_CODE;
+      if (msg.redirect && !isRedirect) {
+        throw new ProtocolViolationError("REQUEST_ERROR carries a Redirect but Error Code is not REDIRECT (0x34)");
+      }
+      if (isRedirect && !msg.redirect) {
+        throw new ProtocolViolationError("REQUEST_ERROR with Error Code REDIRECT (0x34) requires a REDIRECT Error Detail");
+      }
+      const details = /* @__PURE__ */ new Map();
+      for (const [type, values] of msg.errorDetails ?? []) {
+        if (type !== ERROR_DETAIL_REDIRECT && type !== ERROR_DETAIL_UNSUPPORTED_PROPERTY)
+          details.set(type, [...values]);
+      }
+      if (msg.redirect) {
+        validateTrackNamespacePrefix(msg.redirect.trackNamespace);
+        const r = msg.redirect;
+        const bytes = new Uint8Array(vi64BytesLength(r.connectUri) + vi64TupleLength(r.trackNamespace) + vi64BytesLength(r.trackName));
+        let q = writeVi64Bytes(r.connectUri, bytes, 0);
+        q += writeVi64Tuple(r.trackNamespace, bytes, q);
+        writeVi64Bytes(r.trackName, bytes, q);
+        details.set(ERROR_DETAIL_REDIRECT, [bytes]);
+      }
+      if (msg.unsupportedProperties && msg.unsupportedProperties.length > 0) {
+        details.set(ERROR_DETAIL_UNSUPPORTED_PROPERTY, [...msg.unsupportedProperties]);
+      }
+      const detailBytes = encodeKvps18(details, ERROR_DETAIL_SINGLETONS, "Error Detail");
+      const buf = new Uint8Array(vi64EncodingLength(msg.errorCode) + vi64EncodingLength(msg.retryInterval) + reasonPhrase18Length(msg.errorReason) + detailBytes.length);
+      let p = writeVi64(msg.errorCode, buf, 0);
+      p += writeVi64(msg.retryInterval, buf, p);
+      p += writeReasonPhrase18(msg.errorReason, buf, p);
+      buf.set(detailBytes, p);
+      return buf;
+    }
+    decodeRequestError23(errorCode, retryInterval, errorReason, payload, offset) {
+      const details = decodeSetupOptionMap18(payload, offset);
+      let redirect;
+      if (errorCode === REDIRECT_ERROR_CODE) {
+        const values = details.get(ERROR_DETAIL_REDIRECT);
+        if (!values || values.length !== 1) {
+          throw new ProtocolViolationError("REQUEST_ERROR REDIRECT needs exactly one REDIRECT Error Detail", MALFORMED_MESSAGE);
+        }
+        const bytes = values[0];
+        let p = 0;
+        const uri = readVi64Bytes(bytes, p);
+        p += uri.bytesRead;
+        const ns = readVi64Tuple(bytes, p);
+        p += ns.bytesRead;
+        const name = readVi64Bytes(bytes, p);
+        p += name.bytesRead;
+        if (p !== bytes.length) {
+          throw new ProtocolViolationError("REDIRECT Error Detail: unexpected trailing bytes after Track Name", MALFORMED_MESSAGE);
+        }
+        validateTrackNamespacePrefix(ns.value);
+        redirect = { connectUri: uri.value, trackNamespace: ns.value, trackName: name.value };
+      }
+      const unsupported = errorCode === UNSUPPORTED_EXTENSION_ERROR_CODE ? details.get(ERROR_DETAIL_UNSUPPORTED_PROPERTY) : void 0;
+      return {
+        type: "REQUEST_ERROR",
+        errorCode,
+        retryInterval,
+        errorReason,
+        ...redirect ? { redirect } : {},
+        ...unsupported ? { unsupportedProperties: unsupported } : {},
+        ...details.size > 0 ? { errorDetails: details } : {}
+      };
+    }
     // ── FETCH (request, §10.12) ─────────────────────────────────────────
     // First message on a new bidi request stream. Keeps its Request ID. The
     // Standalone body uses vi64 Location fields (full uint64, no QUIC cap).
@@ -4408,7 +4734,7 @@ var PlayaPlayer = (() => {
       const f = msg.fetch;
       let bodyLen;
       if (f.fetchType === 1) {
-        validateFullTrackName(f.trackNamespace, f.trackName, { allowEmptyNamespace: true });
+        validateFullTrackName(f.trackNamespace, f.trackName, this.fullTrackNameRules);
         bodyLen = vi64TupleLength(f.trackNamespace) + vi64BytesLength(f.trackName) + vi64LocationLength(f.startLocation) + vi64LocationLength(f.endLocation);
       } else {
         bodyLen = vi64EncodingLength(f.joiningRequestId) + vi64EncodingLength(f.joiningStart);
@@ -4446,7 +4772,7 @@ var PlayaPlayer = (() => {
         p += start.bytesRead;
         const end = readVi64Location(payload, p);
         p += end.bytesRead;
-        validateFullTrackName(ns.value, name.value, { allowEmptyNamespace: true });
+        validateFullTrackName(ns.value, name.value, this.fullTrackNameRules);
         fetch2 = {
           fetchType: 1,
           trackNamespace: ns.value,
@@ -4481,7 +4807,7 @@ var PlayaPlayer = (() => {
       if (f.fetchType !== 1) {
         throw new ProtocolViolationError("draft-22 has no Joining FETCH; request the prefix with FILL_PARAMETERS");
       }
-      validateFullTrackName(f.trackNamespace, f.trackName, { allowEmptyNamespace: true });
+      validateFullTrackName(f.trackNamespace, f.trackName, this.fullTrackNameRules);
       const parameters = new Map(msg.parameters);
       if (!parameters.has(LOCATION_FILTER_TYPE)) {
         const { startLocation: start, endLocation: end } = f;
@@ -4518,7 +4844,7 @@ var PlayaPlayer = (() => {
       p += ns.bytesRead;
       const name = readVi64Bytes(payload, p);
       p += name.bytesRead;
-      validateFullTrackName(ns.value, name.value, { allowEmptyNamespace: true });
+      validateFullTrackName(ns.value, name.value, this.fullTrackNameRules);
       const params = decodeMessageParams18(payload, p, this.paramRegistry);
       p += params.bytesRead;
       if (p !== payload.length) {
@@ -4610,7 +4936,7 @@ var PlayaPlayer = (() => {
   };
 
   // ../transport/dist/control/codec.js
-  function createControlCodec(version = 16) {
+  function createControlCodec(version = DEFAULT_DRAFT_VERSION) {
     switch (version) {
       case 16:
         return new Draft16Codec();
@@ -4620,6 +4946,8 @@ var PlayaPlayer = (() => {
         return new Draft18Codec();
       case 22:
         return new Draft18Codec(22);
+      case 23:
+        return new Draft18Codec(23);
       default:
         throw new Error(`createControlCodec: draft-${version} control codec is not yet implemented`);
     }
@@ -4732,7 +5060,15 @@ var PlayaPlayer = (() => {
     /** End of Non-Existent Range - objects in range don't exist. */
     END_NON_EXISTENT: 140,
     /** End of Unknown Range - object status unknown. */
-    END_UNKNOWN: 268
+    END_UNKNOWN: 268,
+    /** draft-22+: End of Timed-Out Range - the objects' delivery timeout expired. */
+    END_TIMED_OUT: 524,
+    /** draft-23 §11.4.2: End of Gone Range - the original publisher cannot deliver them. */
+    END_GONE: 1036,
+    /** draft-23 §11.4.2.2: End of Group - the prior Object is the last in its Group. */
+    END_OF_GROUP: 128,
+    /** draft-23 §11.4.2.2: End of Track - the prior Object is the last in the Track. */
+    END_OF_TRACK: 129
   };
   function isSubgroupHeaderType(type, version = 16) {
     if (version === 14) {
@@ -4947,16 +5283,53 @@ var PlayaPlayer = (() => {
     pos += rid.bytesRead;
     return { header: { requestId: rid.value }, bytesRead: pos - offset };
   }
-  var END_TIMED_OUT_22 = 0x20cn;
-  function isEndOfRange18(flags, version = 18) {
-    return flags === BigInt(FetchSpecialFlags.END_NON_EXISTENT) || flags === BigInt(FetchSpecialFlags.END_UNKNOWN) || version === 22 && flags === END_TIMED_OUT_22;
+  function rangeKind18(flags, version) {
+    switch (Number(flags)) {
+      case FetchSpecialFlags.END_NON_EXISTENT:
+        return "non-existent";
+      case FetchSpecialFlags.END_UNKNOWN:
+        return "unknown";
+      // draft-22 §11.4: End of Timed-Out Range, the objects' delivery timeout expired.
+      case FetchSpecialFlags.END_TIMED_OUT:
+        return version !== 18 ? "timed-out" : void 0;
+      // draft-23 §11.4.2: End of Gone Range.
+      case FetchSpecialFlags.END_GONE:
+        return version === 23 ? "gone" : void 0;
+      default:
+        return void 0;
+    }
+  }
+  function endMarker23(flags, version) {
+    if (version !== 23)
+      return void 0;
+    if (flags === BigInt(FetchSpecialFlags.END_OF_GROUP))
+      return "end-of-group";
+    if (flags === BigInt(FetchSpecialFlags.END_OF_TRACK))
+      return "end-of-track";
+    return void 0;
   }
   function validateFetchFlags18(flags, version = 18) {
-    if (isEndOfRange18(flags, version))
+    if (rangeKind18(flags, version) !== void 0 || endMarker23(flags, version) !== void 0)
       return;
     if (flags >= 0n && flags <= 0x7fn)
       return;
-    throw new ProtocolViolationError(`Invalid draft-${version} fetch Serialization Flags 0x${flags.toString(16)} (allowed: 0x00-0x7F, 0x8C, 0x10C${version === 22 ? ", 0x20C" : ""})`);
+    const allowed2 = version === 23 ? ", 0x20C, 0x40C, 0x80, 0x81" : version !== 18 ? ", 0x20C" : "";
+    throw new ProtocolViolationError(`Invalid draft-${version} fetch Serialization Flags 0x${flags.toString(16)} (allowed: 0x00-0x7F, 0x8C, 0x10C${allowed2})`, MALFORMED_OBJECT);
+  }
+  var MALFORMED_OBJECT = Number(SessionError.MALFORMED_OBJECT);
+  var DELTA_ENCODING_OVERFLOW = Number(SessionError.DELTA_ENCODING_OVERFLOW);
+  function decodeEndOfRange23(gd, od, prior, isFirstObject, groupOrder) {
+    if (isFirstObject)
+      return { groupId: gd, objectId: od };
+    if (prior === void 0) {
+      throw new ProtocolViolationError("End of Range requires prior-entry context", MALFORMED_OBJECT);
+    }
+    const groupId = groupOrder === "ascending" ? prior.groupId + gd : prior.groupId - gd;
+    const objectId = gd === 0n ? prior.objectId + od + 1n : od;
+    if (groupId < 0n || groupId > MAX_VI64 || objectId > MAX_VI64) {
+      throw new ProtocolViolationError(`End of Range Location overflows: ${groupId}/${objectId}`, DELTA_ENCODING_OVERFLOW);
+    }
+    return { groupId, objectId };
   }
   function decodeFetchObject18(buf, offset, prior, isFirstObject, groupOrder, version = 18) {
     let pos = offset;
@@ -4964,11 +5337,20 @@ var PlayaPlayer = (() => {
     pos += fl.bytesRead;
     const flags = fl.value;
     validateFetchFlags18(flags, version);
-    if (isEndOfRange18(flags, version)) {
-      const gid = readVi64(buf, pos);
-      pos += gid.bytesRead;
-      const oid = readVi64(buf, pos);
-      pos += oid.bytesRead;
+    const marker = endMarker23(flags, version);
+    if (marker !== void 0) {
+      if (isFirstObject || prior === void 0) {
+        throw new ProtocolViolationError(`Fetch ${marker} has no prior Object`, MALFORMED_OBJECT);
+      }
+      const item2 = { flags: varint(flags), marker, groupId: prior.groupId, objectId: prior.objectId };
+      return { item: item2, bytesRead: pos - offset, nextPrior: { ...prior, objectId: MAX_VI64 } };
+    }
+    const kind = rangeKind18(flags, version);
+    if (kind !== void 0) {
+      const gd = readVi64(buf, pos);
+      pos += gd.bytesRead;
+      const od = readVi64(buf, pos);
+      pos += od.bytesRead;
       if (version === 18) {
         const pl2 = readVi64(buf, pos);
         pos += pl2.bytesRead;
@@ -4976,15 +5358,17 @@ var PlayaPlayer = (() => {
           throw new ProtocolViolationError(`End-of-Range marker has a non-zero payload length (${pl2.value})`);
         }
       }
+      const { groupId: groupId2, objectId: objectId2 } = version === 23 ? decodeEndOfRange23(gd.value, od.value, prior, isFirstObject, groupOrder) : { groupId: gd.value, objectId: od.value };
       const item2 = {
         flags: varint(flags),
-        groupId: gid.value,
-        objectId: oid.value,
-        nonExistent: flags === BigInt(FetchSpecialFlags.END_NON_EXISTENT)
+        groupId: groupId2,
+        objectId: objectId2,
+        nonExistent: kind === "non-existent",
+        kind
       };
       const nextPrior2 = {
-        groupId: gid.value,
-        objectId: oid.value,
+        groupId: groupId2,
+        objectId: objectId2,
         lastObjectSubgroupId: prior?.lastObjectSubgroupId,
         lastObjectPriority: prior?.lastObjectPriority
       };
@@ -4999,16 +5383,16 @@ var PlayaPlayer = (() => {
     const subgroupMode = numFlags & FetchFlags.SUBGROUP_MODE_MASK;
     if (isFirstObject) {
       if (!groupPresent || !objectPresent) {
-        throw new ProtocolViolationError("First fetch object must include Group ID Delta and Object ID Delta");
+        throw new ProtocolViolationError("First fetch object must include Group ID Delta and Object ID Delta", MALFORMED_OBJECT);
       }
       if (!priorityPresent) {
-        throw new ProtocolViolationError("First fetch object cannot inherit Priority from a prior object");
+        throw new ProtocolViolationError("First fetch object cannot inherit Priority from a prior object", MALFORMED_OBJECT);
       }
       if (!isDatagram && (subgroupMode === FetchSubgroupMode.PRIOR || subgroupMode === FetchSubgroupMode.PRIOR_PLUS_ONE)) {
-        throw new ProtocolViolationError("First fetch object cannot inherit Subgroup ID from a prior object");
+        throw new ProtocolViolationError("First fetch object cannot inherit Subgroup ID from a prior object", MALFORMED_OBJECT);
       }
     } else if (prior === void 0) {
-      throw new ProtocolViolationError("Non-first fetch object requires prior-object context");
+      throw new ProtocolViolationError("Non-first fetch object requires prior-object context", MALFORMED_OBJECT);
     }
     let groupId;
     if (groupPresent) {
@@ -5019,12 +5403,12 @@ var PlayaPlayer = (() => {
       } else if (groupOrder === "ascending") {
         groupId = prior.groupId + gd.value + 1n;
         if (groupId > MAX_VI64) {
-          throw new ProtocolViolationError(`Fetch Group ID overflow (ascending): ${groupId} > 2^64-1`);
+          throw new ProtocolViolationError(`Fetch Group ID overflow (ascending): ${groupId} > 2^64-1`, DELTA_ENCODING_OVERFLOW);
         }
       } else {
         const step = gd.value + 1n;
         if (step > prior.groupId) {
-          throw new ProtocolViolationError(`Fetch Group ID underflow (descending): ${prior.groupId} - ${step} < 0`);
+          throw new ProtocolViolationError(`Fetch Group ID underflow (descending): ${prior.groupId} - ${step} < 0`, DELTA_ENCODING_OVERFLOW);
         }
         groupId = prior.groupId - step;
       }
@@ -5042,7 +5426,7 @@ var PlayaPlayer = (() => {
         case FetchSubgroupMode.PRIOR:
         case FetchSubgroupMode.PRIOR_PLUS_ONE: {
           if (prior?.lastObjectSubgroupId === void 0) {
-            throw new ProtocolViolationError("Fetch object references prior Subgroup ID but no prior actual object exists");
+            throw new ProtocolViolationError("Fetch object references prior Subgroup ID but no prior actual object exists", MALFORMED_OBJECT);
           }
           if (subgroupMode === FetchSubgroupMode.PRIOR_PLUS_ONE) {
             subgroupId = prior.lastObjectSubgroupId + 1n;
@@ -5069,14 +5453,16 @@ var PlayaPlayer = (() => {
       if (isFirstObject || groupPresent) {
         objectId = od.value;
       } else {
-        objectId = prior.objectId + od.value;
-        if (objectId > MAX_VI64)
-          throw new ProtocolViolationError(`Fetch Object ID overflow: ${objectId} > 2^64-1`);
+        objectId = prior.objectId + od.value + (version === 23 ? 2n : 0n);
+        if (objectId > MAX_VI64) {
+          throw new ProtocolViolationError(`Fetch Object ID overflow: ${objectId} > 2^64-1`, DELTA_ENCODING_OVERFLOW);
+        }
       }
     } else {
       objectId = prior.objectId + 1n;
-      if (objectId > MAX_VI64)
-        throw new ProtocolViolationError(`Fetch Object ID overflow: ${objectId} > 2^64-1`);
+      if (objectId > MAX_VI64) {
+        throw new ProtocolViolationError(`Fetch Object ID overflow: ${objectId} > 2^64-1`, DELTA_ENCODING_OVERFLOW);
+      }
     }
     let publisherPriority;
     if (priorityPresent) {
@@ -5084,7 +5470,7 @@ var PlayaPlayer = (() => {
       pos += 1;
     } else {
       if (prior?.lastObjectPriority === void 0) {
-        throw new ProtocolViolationError("Fetch object references prior Priority but no prior actual object exists");
+        throw new ProtocolViolationError("Fetch object references prior Priority but no prior actual object exists", MALFORMED_OBJECT);
       }
       publisherPriority = prior.lastObjectPriority;
     }
@@ -5546,8 +5932,8 @@ var PlayaPlayer = (() => {
   }
 
   // ../transport/dist/data/data-codec.js
-  function createDataCodec(version = 16) {
-    if (version === 18 || version === 22) {
+  function createDataCodec(version = DEFAULT_DRAFT_VERSION) {
+    if (version === 18 || version === 22 || version === 23) {
       return createDataCodec18(version);
     }
     if (!isWiredDraft(version)) {
@@ -5595,7 +5981,7 @@ var PlayaPlayer = (() => {
     allocationStep: 2n,
     inboundValidation: "parity-and-duplicate"
   };
-  function getRequestPolicy(version = 16) {
+  function getRequestPolicy(version = DEFAULT_DRAFT_VERSION) {
     return isRequestStreamDraft(version) ? STREAM_LIMITED : CREDITED;
   }
 
@@ -5617,7 +6003,7 @@ var PlayaPlayer = (() => {
   function getCapabilities(version) {
     return isRequestStreamDraft(version) ? D18_CAPABILITIES : LEGACY_CAPABILITIES;
   }
-  function getProtocolProfile(version = 16) {
+  function getProtocolProfile(version = DEFAULT_DRAFT_VERSION) {
     return {
       version,
       control: createControlCodec(version),
@@ -5827,7 +6213,7 @@ var PlayaPlayer = (() => {
     writeVi64(requestId, buf, p);
     return buf;
   }
-  function encodeFetchObject18(fields, prior, isFirstObject, groupOrder) {
+  function encodeFetchObject18(fields, prior, isFirstObject, groupOrder, version = 18) {
     const { groupId, subgroupId, objectId, publisherPriority, extensions, payload } = fields;
     const newGroup = isFirstObject || groupId !== prior.groupId;
     let flags = FetchSubgroupMode.EXPLICIT | FetchFlags.OBJECT_ID | FetchFlags.PRIORITY;
@@ -5848,6 +6234,14 @@ var PlayaPlayer = (() => {
         throw new Error(`fetch Group ID Delta out of range for ${groupOrder} order`);
       }
       objDelta = objectId;
+    } else if (version === 23) {
+      if (objectId <= prior.objectId)
+        throw new Error("fetch Object ID must increase within a group");
+      if (objectId === prior.objectId + 1n) {
+        flags &= ~FetchFlags.OBJECT_ID;
+      } else {
+        objDelta = objectId - prior.objectId - 2n;
+      }
     } else {
       objDelta = objectId - prior.objectId;
       if (objDelta < 0n)
@@ -5858,7 +6252,8 @@ var PlayaPlayer = (() => {
     if (groupDelta !== void 0)
       size += vi64EncodingLength(groupDelta);
     size += vi64EncodingLength(subgroupId);
-    size += vi64EncodingLength(objDelta);
+    if (objDelta !== void 0)
+      size += vi64EncodingLength(objDelta);
     size += 1;
     if (extensions !== void 0) {
       size += vi64EncodingLength(BigInt(extensions.length)) + extensions.length;
@@ -5870,7 +6265,8 @@ var PlayaPlayer = (() => {
     if (groupDelta !== void 0)
       p += writeVi64(groupDelta, buf, p);
     p += writeVi64(subgroupId, buf, p);
-    p += writeVi64(objDelta, buf, p);
+    if (objDelta !== void 0)
+      p += writeVi64(objDelta, buf, p);
     buf[p++] = publisherPriority;
     if (extensions !== void 0) {
       p += writeVi64(BigInt(extensions.length), buf, p);
@@ -5888,13 +6284,36 @@ var PlayaPlayer = (() => {
     };
     return { bytes: buf, nextPrior };
   }
-  function encodeFetchEndOfRange18(nonExistent, groupId, objectId, prior, version = 18) {
-    const flags = BigInt(nonExistent ? FetchSpecialFlags.END_NON_EXISTENT : FetchSpecialFlags.END_UNKNOWN);
-    const size = vi64EncodingLength(flags) + vi64EncodingLength(groupId) + vi64EncodingLength(objectId) + (version === 18 ? 1 : 0);
+  var RANGE_FLAGS = {
+    "non-existent": FetchSpecialFlags.END_NON_EXISTENT,
+    unknown: FetchSpecialFlags.END_UNKNOWN,
+    "timed-out": FetchSpecialFlags.END_TIMED_OUT,
+    gone: FetchSpecialFlags.END_GONE
+  };
+  function encodeFetchEndOfRange18(kind, groupId, objectId, prior, version = 18, groupOrder = "ascending") {
+    const rangeKind = kind === true ? "non-existent" : kind === false ? "unknown" : kind;
+    if (rangeKind === "timed-out" && version === 18 || rangeKind === "gone" && version !== 23) {
+      throw new Error(`draft ${version} has no ${rangeKind} End of Range`);
+    }
+    const flags = BigInt(RANGE_FLAGS[rangeKind]);
+    let gField = groupId;
+    let oField = objectId;
+    if (version === 23 && prior !== void 0) {
+      const gd = groupOrder === "ascending" ? groupId - prior.groupId : prior.groupId - groupId;
+      if (gd < 0n)
+        throw new Error(`End of Range Group ${groupId} is behind the prior entry for ${groupOrder} order`);
+      gField = gd;
+      if (gd === 0n) {
+        if (objectId <= prior.objectId)
+          throw new Error("End of Range must follow the prior entry within its Group");
+        oField = objectId - prior.objectId - 1n;
+      }
+    }
+    const size = vi64EncodingLength(flags) + vi64EncodingLength(gField) + vi64EncodingLength(oField) + (version === 18 ? 1 : 0);
     const buf = new Uint8Array(size);
     let p = writeVi64(flags, buf, 0);
-    p += writeVi64(groupId, buf, p);
-    p += writeVi64(objectId, buf, p);
+    p += writeVi64(gField, buf, p);
+    p += writeVi64(oField, buf, p);
     if (version === 18)
       writeVi64(0n, buf, p);
     const nextPrior = {
@@ -5904,6 +6323,14 @@ var PlayaPlayer = (() => {
       lastObjectPriority: prior?.lastObjectPriority
     };
     return { bytes: buf, nextPrior };
+  }
+  function encodeFetchEndMarker23(marker, prior) {
+    if (prior === void 0)
+      throw new Error(`fetch ${marker} needs a prior Object`);
+    const flags = BigInt(marker === "end-of-group" ? FetchSpecialFlags.END_OF_GROUP : FetchSpecialFlags.END_OF_TRACK);
+    const buf = new Uint8Array(vi64EncodingLength(flags));
+    writeVi64(flags, buf, 0);
+    return { bytes: buf, nextPrior: { ...prior, objectId: MAX_VI64 } };
   }
 
   // ../transport/dist/qlog/trace.js
@@ -6426,7 +6853,7 @@ var PlayaPlayer = (() => {
     webtransport;
     state = SessionState.IDLE;
     setupResult;
-    constructor(role, draftVersion = 16, webtransport = false) {
+    constructor(role, draftVersion = DEFAULT_DRAFT_VERSION, webtransport = false) {
       this.role = role;
       this.draftVersion = draftVersion;
       this.webtransport = webtransport;
@@ -6543,6 +6970,7 @@ var PlayaPlayer = (() => {
       let peerMaxAuthTokenCacheSize;
       let authTokens;
       let peerMaxRequestUpdates;
+      let peerMaxControlMessageSize;
       for (const [type, values] of options) {
         if (values.length > 1 && KNOWN_SINGLETON_SETUP_OPTIONS_18.has(Number(type))) {
           throw new SetupError(`Repeated Setup Option 0x${type.toString(16)} (singleton)`, "PROTOCOL_VIOLATION");
@@ -6577,6 +7005,24 @@ var PlayaPlayer = (() => {
             if (typeof first === "bigint")
               peerMaxRequestUpdates = first;
             break;
+          case SetupOption23.MAX_CONTROL_MESSAGE_SIZE: {
+            if (!isDraft23(this.draftVersion))
+              break;
+            if (values.length > 1) {
+              throw new SetupError("Repeated Setup Option MAX_CONTROL_MESSAGE_SIZE (singleton)", "PROTOCOL_VIOLATION");
+            }
+            if (!(first instanceof Uint8Array))
+              break;
+            const size = parseMaxControlMessageSize(first);
+            if (size === "malformed") {
+              throw new SetupError("MAX_CONTROL_MESSAGE_SIZE is not a single integer", "KEY_VALUE_FORMATTING_ERROR");
+            }
+            if (size === "too-small") {
+              throw new SetupError("MAX_CONTROL_MESSAGE_SIZE is below the minimum 65535", "PROTOCOL_VIOLATION");
+            }
+            peerMaxControlMessageSize = size;
+            break;
+          }
         }
       }
       return {
@@ -6586,7 +7032,8 @@ var PlayaPlayer = (() => {
         ...authority !== void 0 ? { authority } : {},
         ...peerMaxAuthTokenCacheSize !== void 0 ? { peerMaxAuthTokenCacheSize } : {},
         ...authTokens !== void 0 ? { authTokens } : {},
-        ...peerMaxRequestUpdates !== void 0 ? { peerMaxRequestUpdates } : {}
+        ...peerMaxRequestUpdates !== void 0 ? { peerMaxRequestUpdates } : {},
+        ...peerMaxControlMessageSize !== void 0 ? { peerMaxControlMessageSize } : {}
       };
     }
     /**
@@ -8451,6 +8898,61 @@ var PlayaPlayer = (() => {
     [MessageParam.TRACK_NAMESPACE_PREFIX, /* @__PURE__ */ new Set(["REQUEST_UPDATE"])],
     [0x35n, /* @__PURE__ */ new Set(["SUBSCRIBE", "FETCH", "TRACK_STATUS", "SUBSCRIBE_TRACKS"])]
   ]);
+  var SUBSCRIBE_TRACKS_ID = 0x36n;
+  var KNOWN_MESSAGE_PARAMS_23 = /* @__PURE__ */ new Set([...KNOWN_MESSAGE_PARAMS_22, SUBSCRIBE_TRACKS_ID]);
+  var VALID_PARAMS_FOR_MESSAGE_TYPE_23 = new Map([
+    ...VALID_PARAMS_FOR_MESSAGE_TYPE_22,
+    [MessageParam.RENDEZVOUS_TIMEOUT, /* @__PURE__ */ new Set(["SUBSCRIBE"])],
+    [MessageParam.EXPIRES, /* @__PURE__ */ new Set([
+      "SUBSCRIBE_OK",
+      "PUBLISH",
+      "PUBLISH_OK",
+      "REQUEST_UPDATE_OK",
+      "TRACK_STATUS_OK",
+      "SUBSCRIBE_NAMESPACE_OK",
+      "SUBSCRIBE_TRACKS_OK",
+      "PUBLISH_NAMESPACE_OK",
+      "FETCH_OK"
+    ])],
+    [MessageParam.LARGEST_OBJECT, /* @__PURE__ */ new Set([
+      "SUBSCRIBE_OK",
+      "PUBLISH",
+      "REQUEST_UPDATE_OK",
+      "TRACK_STATUS_OK",
+      "PUBLISH_STATE_NOTIFY",
+      "FETCH_OK"
+    ])],
+    [FILL_PARAMETERS, /* @__PURE__ */ new Set(["SUBSCRIBE", "REQUEST_UPDATE", "SUBSCRIBE_TRACKS", "PUBLISH"])],
+    [MessageParam.NEW_GROUP_REQUEST, /* @__PURE__ */ new Set(["SUBSCRIBE", "REQUEST_UPDATE"])],
+    [SUBSCRIBE_TRACKS_ID, /* @__PURE__ */ new Set(["PUBLISH"])]
+  ]);
+  function isLocationValue(v) {
+    return typeof v === "object" && v !== null && !(v instanceof Uint8Array) && !Array.isArray(v) && "group" in v && "object" in v;
+  }
+  function requestedFetchEnd(fetch2) {
+    if (fetch2.endGroup === void 0)
+      return void 0;
+    const end = fetch2.endObject ?? 0n;
+    return { group: fetch2.endGroup, object: end === 0n ? MAX_VI642 : end - 1n };
+  }
+  function locationBefore(a, b) {
+    return a.group < b.group || a.group === b.group && a.object < b.object;
+  }
+  function fetchOkParameters23(fetch2, options) {
+    const parameters = new Map(options.parameters ?? []);
+    const largest = options.largestObject;
+    if (parameters.has(MessageParam.LARGEST_OBJECT) || largest === void 0)
+      return parameters;
+    const start = fetch2.startGroup === void 0 ? void 0 : { group: fetch2.startGroup, object: fetch2.startObject ?? 0n };
+    if (start !== void 0 && locationBefore(largest, start)) {
+      throw new SessionError2(`Largest Object ${largest.group}/${largest.object} is before the FETCH start`, "INVALID_STATE");
+    }
+    const requestedEnd = requestedFetchEnd(fetch2);
+    if (requestedEnd === void 0 || !locationBefore(requestedEnd, largest)) {
+      parameters.set(MessageParam.LARGEST_OBJECT, [{ group: largest.group, object: largest.object }]);
+    }
+    return parameters;
+  }
   function prefixesOverlap(a, b) {
     const shorter = a.length <= b.length ? a : b;
     const longer = a.length <= b.length ? b : a;
@@ -8657,7 +9159,7 @@ var PlayaPlayer = (() => {
     /** draft-22 fills still expected: fill Request ID → subscription Request ID. */
     fillRequests = /* @__PURE__ */ new Map();
     _goawayReceived = false;
-    constructor(_role, _draftVersion = 16, options = {}) {
+    constructor(_role, _draftVersion = DEFAULT_DRAFT_VERSION, options = {}) {
       this._role = _role;
       this._draftVersion = _draftVersion;
       this.setupGate = new SetupGate(_role, _draftVersion, options.webtransport ?? false);
@@ -9371,7 +9873,11 @@ var PlayaPlayer = (() => {
         }
       }
       if (fetch2.responseReceived) {
-        return this.closeWithError(SessionError.PROTOCOL_VIOLATION, `Duplicate FETCH_OK for request ${msg.requestId}`);
+        return this.closeWithError(
+          // draft-23 §12.2: a duplicate OK is UNEXPECTED_MESSAGE.
+          isDraft23(this._draftVersion) ? SessionError.UNEXPECTED_MESSAGE : SessionError.PROTOCOL_VIOLATION,
+          `Duplicate FETCH_OK for request ${msg.requestId}`
+        );
       }
       fetch2.handleFetchOk();
       if (fetch2.isFetcherComplete)
@@ -9401,6 +9907,35 @@ var PlayaPlayer = (() => {
       return [];
     }
     /**
+     * draft-23 §9.3: a FETCH is answered with REQUEST_OK. If `msg` answers one of
+     * our pending FETCHes, return it as the FETCH_OK the rest of the stack handles:
+     * the End Location is LARGEST_OBJECT when the publisher sent it (Largest Object
+     * fell inside the range, §3.2), else the requested End Location. End Of Track
+     * is not known until an End of Track marker arrives on the data stream.
+     * A REQUEST_OK for a FETCH we cancelled is still its FETCH_OK, so the crossed
+     * response is tolerated as on earlier drafts. Returns `undefined` for any
+     * other REQUEST_OK, and before draft 23. {@link handleControlMessage} applies
+     * this itself; the I/O layer calls it to surface the FETCH_OK.
+     */
+    fetchOkFromRequestOk(requestId, msg) {
+      if (!isDraft23(this._draftVersion))
+        return void 0;
+      const fetch2 = this.fetches.get(requestId);
+      if (!fetch2 && this.recentlyCancelled.get(requestId)?.kind !== "fetch")
+        return void 0;
+      const largest = msg.parameters.get(MessageParam.LARGEST_OBJECT)?.[0];
+      const endLocation = isLocationValue(largest) ? { group: largest.group, object: largest.object } : (fetch2 && requestedFetchEnd(fetch2)) ?? { group: 0n, object: 0n };
+      const trackProperties = msg.trackProperties ?? msg.trackExtensions;
+      return {
+        type: "FETCH_OK",
+        requestId,
+        endOfTrack: 0,
+        endLocation,
+        parameters: msg.parameters,
+        ...trackProperties ? { trackProperties } : {}
+      };
+    }
+    /**
      * draft-18: resolve which response a REQUEST_OK stands in for, by the outbound
      * request state it correlates to. Returns the effective response message type
      * used for parameter-scope validation (§10.2), or `undefined` if the Request ID
@@ -9423,6 +9958,9 @@ var PlayaPlayer = (() => {
       return void 0;
     }
     handleRequestOk(msg) {
+      const fetchOk = this.fetchOkFromRequestOk(msg.requestId, msg);
+      if (fetchOk)
+        return this.handleFetchOk(fetchOk);
       if (((msg.trackProperties ?? msg.trackExtensions)?.size ?? 0) > 0 && !this.pendingTrackStatuses.has(msg.requestId)) {
         return this.closeWithError(SessionError.PROTOCOL_VIOLATION, `Track Properties are not valid on this REQUEST_OK (request ${msg.requestId})`);
       }
@@ -10189,8 +10727,9 @@ var PlayaPlayer = (() => {
       } catch (e) {
         return this.closeWithError(SessionError.PROTOCOL_VIOLATION, e instanceof Error ? e.message : "Malformed Track Namespace Prefix in REQUEST_UPDATE");
       }
+      const overlapForbidden = !isDraft23(this._draftVersion);
       if (incNs) {
-        for (const [rid, existing] of this.incomingNamespaceSubscriptions) {
+        for (const [rid, existing] of overlapForbidden ? this.incomingNamespaceSubscriptions : []) {
           if (rid === existingRid || existing.isTerminated)
             continue;
           if (prefixesOverlap(existing.namespacePrefix, newPrefix)) {
@@ -10199,7 +10738,7 @@ var PlayaPlayer = (() => {
         }
         incNs.updatePrefix(newPrefix);
       } else if (incTracks) {
-        for (const [rid, existing] of this.incomingTrackSubscriptions) {
+        for (const [rid, existing] of overlapForbidden ? this.incomingTrackSubscriptions : []) {
           if (rid === existingRid)
             continue;
           if (prefixesOverlap(existing.trackNamespacePrefix, newPrefix)) {
@@ -10365,6 +10904,8 @@ var PlayaPlayer = (() => {
             parameters2.set(key, values);
         }
         parameters2.set(MessageParam.FORWARD, [varint(BigInt(tracks.forward))]);
+        if (isDraft23(this._draftVersion))
+          parameters2.set(SUBSCRIBE_TRACKS_ID, [varint(options.subscribeTracksRequestId)]);
         options = { ...options, parameters: parameters2 };
       }
       this.assertPublisherAliasAvailable(trackAlias, namespace, name);
@@ -10453,13 +10994,13 @@ var PlayaPlayer = (() => {
       if (!isDraft22(this._draftVersion))
         return void 0;
       for (const key of params.keys()) {
-        const scopes = VALID_PARAMS_FOR_MESSAGE_TYPE_22.get(key);
+        const scopes = (isDraft23(this._draftVersion) ? VALID_PARAMS_FOR_MESSAGE_TYPE_23 : VALID_PARAMS_FOR_MESSAGE_TYPE_22).get(key);
         if (!scopes)
           continue;
         const prefixUpdate = key === MessageParam.TRACK_NAMESPACE_PREFIX && (requestType === "SUBSCRIBE_NAMESPACE" || requestType === "SUBSCRIBE_TRACKS");
         const subscriptionOnly = key === FILL_PARAMETERS || key === MessageParam.SUBSCRIPTION_FILTER || key >= 0x25n && key <= 0x28n;
         if (!prefixUpdate && (!scopes.has(requestType) || requestType === "FETCH" && subscriptionOnly)) {
-          return this.closeWithError(SessionError.PROTOCOL_VIOLATION, `Parameter 0x${key.toString(16)} is out of scope for REQUEST_UPDATE on ${requestType} (9.20)`);
+          return this.closeWithError(isDraft23(this._draftVersion) ? SessionError.INVALID_PARAMETER : SessionError.PROTOCOL_VIOLATION, `Parameter 0x${key.toString(16)} is out of scope for REQUEST_UPDATE on ${requestType} (9.20)`);
         }
       }
       return void 0;
@@ -11168,6 +11709,11 @@ var PlayaPlayer = (() => {
           const nsValidationError = this.validateCombinedNamespace(nsSm.namespacePrefix, nsMsg.trackNamespaceSuffix);
           if (nsValidationError)
             return nsValidationError;
+          if (isDraft23(this._draftVersion) && (nsMsg.parameters?.size ?? 0) > 0) {
+            const paramError = this.validateMessageParams(nsMsg.parameters, "NAMESPACE");
+            if (paramError)
+              return this.closeWithError(paramError.error, paramError.reason);
+          }
           nsSm.handleNamespace(nsMsg.trackNamespaceSuffix);
           return [];
         }
@@ -11177,7 +11723,11 @@ var PlayaPlayer = (() => {
           if (ndValidationError)
             return ndValidationError;
           if (!nsSm.hasDiscoveredSuffix(ndMsg.trackNamespaceSuffix)) {
-            return this.closeWithError(SessionError.PROTOCOL_VIOLATION, `NAMESPACE_DONE for suffix not previously announced via NAMESPACE (\xA76.1)`);
+            return this.closeWithError(
+              // draft-23 §12.2: a message in the wrong order is UNEXPECTED_MESSAGE.
+              isDraft23(this._draftVersion) ? SessionError.UNEXPECTED_MESSAGE : SessionError.PROTOCOL_VIOLATION,
+              `NAMESPACE_DONE for suffix not previously announced via NAMESPACE (\xA76.1)`
+            );
           }
           nsSm.handleNamespaceDone();
           return [];
@@ -11244,7 +11794,7 @@ var PlayaPlayer = (() => {
           requestId: msg.requestId,
           parameters: /* @__PURE__ */ new Map()
         };
-        const notifyAction2 = {
+        const notifyAction = {
           type: "notify_namespace",
           requestId: msg.requestId,
           message: msg
@@ -11252,19 +11802,21 @@ var PlayaPlayer = (() => {
         if (isRequestStreamDraft(this._draftVersion)) {
           this.incomingPublishNamespaces.set(msg.requestId, { namespace: msg.trackNamespace });
         }
-        return [this.sendControl(okMsg2), notifyAction2, ...validated.replenish ?? []];
+        return [this.sendControl(okMsg2), notifyAction, ...validated.replenish ?? []];
       }
-      match.nsSm.handleNamespace(msg.trackNamespace);
+      const matches = isDraft23(this._draftVersion) ? this.findNamespaceSubscriptionsByPrefix(msg.trackNamespace) : [match];
+      for (const m of matches)
+        m.nsSm.handleNamespace(msg.trackNamespace);
       if (isRequestStreamDraft(this._draftVersion)) {
         this.incomingPublishNamespaces.set(msg.requestId, { namespace: msg.trackNamespace });
       }
       const okMsg = isV14 ? { type: "PUBLISH_NAMESPACE_OK", requestId: msg.requestId } : { type: "REQUEST_OK", requestId: msg.requestId, parameters: /* @__PURE__ */ new Map() };
-      const notifyAction = {
+      const notifyActions = matches.map((m) => ({
         type: "notify_namespace",
-        requestId: match.nsSm.requestId,
+        requestId: m.nsSm.requestId,
         message: msg
-      };
-      return [this.sendControl(okMsg), notifyAction, ...validated.replenish ?? []];
+      }));
+      return [this.sendControl(okMsg), ...notifyActions, ...validated.replenish ?? []];
     }
     /**
      * Withdraw an inbound PUBLISH_NAMESPACE on a FIN/reset of its request stream
@@ -11280,9 +11832,9 @@ var PlayaPlayer = (() => {
       if (!entry)
         return [];
       this.incomingPublishNamespaces.delete(requestId);
-      const match = this.findNamespaceSubscriptionByPrefix(entry.namespace);
-      if (match)
-        match.nsSm.withdrawNamespace(entry.namespace);
+      const matches = isDraft23(this._draftVersion) ? this.findNamespaceSubscriptionsByPrefix(entry.namespace) : [this.findNamespaceSubscriptionByPrefix(entry.namespace)];
+      for (const match of matches)
+        match?.nsSm.withdrawNamespace(entry.namespace);
       return [];
     }
     // ─── Inbound SUBSCRIBE_NAMESPACE (publisher side, draft-18 §10.18) ─────────
@@ -11309,7 +11861,7 @@ var PlayaPlayer = (() => {
       const reserved = this.rejectReservedNamespace(msg.trackNamespacePrefix, msg.requestId, validated.replenish);
       if (reserved)
         return reserved;
-      for (const existing of this.incomingNamespaceSubscriptions.values()) {
+      for (const existing of isDraft23(this._draftVersion) ? [] : this.incomingNamespaceSubscriptions.values()) {
         if (existing.isTerminated)
           continue;
         if (prefixesOverlap(existing.namespacePrefix, msg.trackNamespacePrefix)) {
@@ -11440,7 +11992,7 @@ var PlayaPlayer = (() => {
       const reserved = this.rejectReservedNamespace(msg.trackNamespacePrefix, msg.requestId, validated.replenish);
       if (reserved)
         return reserved;
-      for (const existing of this.incomingTrackSubscriptions.values()) {
+      for (const existing of isDraft23(this._draftVersion) ? [] : this.incomingTrackSubscriptions.values()) {
         if (prefixesOverlap(existing.trackNamespacePrefix, msg.trackNamespacePrefix)) {
           const errorMsg = {
             type: "REQUEST_ERROR",
@@ -11782,7 +12334,14 @@ var PlayaPlayer = (() => {
      * O(n) scan over active namespace subscriptions — typically 1-3.
      */
     findNamespaceSubscriptionByPrefix(namespace) {
+      return this.findNamespaceSubscriptionsByPrefix(namespace, 1)[0];
+    }
+    /** Every active outgoing namespace subscription whose prefix matches `namespace` (at most `limit`). */
+    findNamespaceSubscriptionsByPrefix(namespace, limit = Infinity) {
+      const found = [];
       for (const nsSm of this.namespaceSubscriptions.values()) {
+        if (found.length >= limit)
+          break;
         if (!nsSm.isActive)
           continue;
         const prefix = nsSm.namespacePrefix;
@@ -11805,9 +12364,9 @@ var PlayaPlayer = (() => {
             break;
         }
         if (matches)
-          return { nsSm };
+          found.push({ nsSm });
       }
-      return void 0;
+      return found;
     }
     // ─── Publisher-Side Operations ───────────────────────────────────────
     /**
@@ -12038,9 +12597,19 @@ var PlayaPlayer = (() => {
       if (!fetch2) {
         throw new SessionError2(`Unknown incoming fetch ${requestId}`, "INVALID_STATE");
       }
+      if (isDraft23(this._draftVersion) && (options.endOfTrack ?? 0) !== 0) {
+        throw new SessionError2("draft 23 has no End Of Track in the FETCH response; send an End of Track marker on the data stream (sendFetchEndMarker)", "INVALID_STATE");
+      }
       const trackProperties = this.resolveTrackProperties(options.trackProperties, "FETCH_OK");
       fetch2.sendFetchOk();
-      const fetchOk = {
+      const response = isDraft23(this._draftVersion) ? {
+        // draft-23 §9.3: a FETCH is answered with REQUEST_OK. End Of Track moves to
+        // the data stream (an End of Track marker, §11.4.2.2).
+        type: "REQUEST_OK",
+        requestId,
+        parameters: fetchOkParameters23(fetch2, options),
+        trackProperties
+      } : {
         type: "FETCH_OK",
         requestId,
         endOfTrack: options.endOfTrack ?? 0,
@@ -12050,7 +12619,7 @@ var PlayaPlayer = (() => {
       };
       if (fetch2.isPublisherComplete)
         this.incomingFetches.delete(requestId);
-      return [this.sendControl(fetchOk)];
+      return [this.sendControl(response)];
     }
     /**
      * Reject an incoming fetch request.
@@ -12207,7 +12776,7 @@ var PlayaPlayer = (() => {
       if (this._draftVersion === 14 && key === MessageParam.GROUP_ORDER && messageType === "PUBLISH") {
         return true;
       }
-      const table = isDraft22(this._draftVersion) ? VALID_PARAMS_FOR_MESSAGE_TYPE_22 : isRequestStreamDraft(this._draftVersion) ? VALID_PARAMS_FOR_MESSAGE_TYPE_18 : VALID_PARAMS_FOR_MESSAGE_TYPE;
+      const table = isDraft23(this._draftVersion) ? VALID_PARAMS_FOR_MESSAGE_TYPE_23 : isDraft22(this._draftVersion) ? VALID_PARAMS_FOR_MESSAGE_TYPE_22 : isRequestStreamDraft(this._draftVersion) ? VALID_PARAMS_FOR_MESSAGE_TYPE_18 : VALID_PARAMS_FOR_MESSAGE_TYPE;
       return table.get(key)?.has(messageType) ?? false;
     }
     /** We advertise the default MAX_FILTER_RANGES=0; never silently ignore a filter. */
@@ -12226,10 +12795,21 @@ var PlayaPlayer = (() => {
         errorReason: "Range filters exceed MAX_FILTER_RANGES=0 (9.1.6)"
       })];
     }
-    /** Validate parameter scope, multiplicity, and values using the selected draft. */
+    /**
+     * Validate parameter scope, multiplicity, and values using the selected draft.
+     * Draft 23 closes with INVALID_PARAMETER where earlier drafts use
+     * PROTOCOL_VIOLATION (§9.19, §9.19.1).
+     */
     validateMessageParams(params, messageType) {
+      const error = this.validateMessageParamsForDraft(params, messageType);
+      if (error && isDraft23(this._draftVersion) && error.error === SessionError.PROTOCOL_VIOLATION) {
+        return { error: SessionError.INVALID_PARAMETER, reason: error.reason };
+      }
+      return error;
+    }
+    validateMessageParamsForDraft(params, messageType) {
       const isDraft18 = isRequestStreamDraft(this._draftVersion);
-      const knownParams = isDraft22(this._draftVersion) ? KNOWN_MESSAGE_PARAMS_22 : isDraft18 ? KNOWN_MESSAGE_PARAMS_18 : KNOWN_MESSAGE_PARAMS;
+      const knownParams = isDraft23(this._draftVersion) ? KNOWN_MESSAGE_PARAMS_23 : isDraft22(this._draftVersion) ? KNOWN_MESSAGE_PARAMS_22 : isDraft18 ? KNOWN_MESSAGE_PARAMS_18 : KNOWN_MESSAGE_PARAMS;
       for (const [key, values] of params) {
         if (!knownParams.has(key)) {
           if (this._draftVersion === 14)
@@ -12583,7 +13163,7 @@ var PlayaPlayer = (() => {
      */
     resolveEmptyFill() {
       const attempt = this.attempt;
-      if (this.draft !== 22 || this.largest !== null)
+      if (!isDraft22(this.draft) || this.largest !== null)
         return;
       if (!attempt || attempt.kind !== "joining" || attempt.cancelled)
         return;
@@ -13751,7 +14331,8 @@ var PlayaPlayer = (() => {
      *  a message assigned to a Request stream (§3.3; §10 Table 5), a decode failure,
      *  or a FIN/close (the control stream MUST stay open for the session, §3.3). The owner
      *  MUST close the session with PROTOCOL_VIOLATION — this is fatal, NOT a per-stream
-     *  error routed through {@link onStreamError}. */
+     *  error routed through {@link onStreamError}. `code` is the more specific
+     *  draft-23 close code (§12.2), when one applies. */
     onControlStreamViolation;
     /**
      * Called for a subgroup, FETCH, or PADDING stream classified by
@@ -13792,7 +14373,7 @@ var PlayaPlayer = (() => {
     onRequestClosed;
     constructor(session) {
       this.session = session;
-      this.version = session.draftVersion === 22 ? 22 : 18;
+      this.version = requestStreamDraftOf(session.draftVersion);
       this.codec = createControlCodec(this.version);
     }
     /**
@@ -13962,7 +14543,7 @@ var PlayaPlayer = (() => {
             } else if (message.type === "GOAWAY") {
               await this.onControlMessage?.(message);
             } else {
-              this.onControlStreamViolation?.(`unexpected ${message.type} on the control stream after SETUP (stream assignment: \xA73.3; \xA710 Table 5)`);
+              this.onControlStreamViolation?.(`unexpected ${message.type} on the control stream after SETUP (stream assignment: \xA73.3; \xA710 Table 5)`, Number(SessionError.UNEXPECTED_MESSAGE));
               return;
             }
           }
@@ -13974,7 +14555,7 @@ var PlayaPlayer = (() => {
             }
             if (!sawSetup)
               throw new Error("UniPairTopology: control stream ended before SETUP");
-            this.onControlStreamViolation?.("control stream closed (FIN) during the session (\xA73.3)");
+            this.onControlStreamViolation?.("control stream closed (FIN) during the session (\xA73.3)", Number(SessionError.CLOSED_CONTROL_STREAM));
             return;
           }
         }
@@ -13983,7 +14564,7 @@ var PlayaPlayer = (() => {
         if (!acceptedSetup) {
           setupSeen.reject(e);
         } else if (epoch === this.controlEpoch) {
-          this.onControlStreamViolation?.(e.message);
+          this.onControlStreamViolation?.(e.message, e instanceof ProtocolViolationError ? e.code : void 0);
         }
       } finally {
         if (this.controlReader === reader)
@@ -14293,6 +14874,7 @@ var PlayaPlayer = (() => {
     PUBLISH: /* @__PURE__ */ new Set(["REQUEST_OK", "REQUEST_ERROR"]),
     REQUEST_UPDATE: /* @__PURE__ */ new Set(["REQUEST_OK", "REQUEST_ERROR"])
   };
+  var FETCH_RESPONSES_23 = /* @__PURE__ */ new Set(["REQUEST_OK", "REQUEST_ERROR"]);
   var STREAM_OPENING_REQUESTS = /* @__PURE__ */ new Set([
     "SUBSCRIBE",
     "FETCH",
@@ -14378,7 +14960,7 @@ var PlayaPlayer = (() => {
         throw new RequestCancelledError(StreamResetCode18.CANCELLED);
       if (this.failure)
         throw this.failure;
-      const allowed2 = ALLOWED_RESPONSES[message.type];
+      const allowed2 = message.type === "FETCH" && isDraft23(this.codec.version) ? FETCH_RESPONSES_23 : ALLOWED_RESPONSES[message.type];
       if (!allowed2) {
         throw new Error(`UniPairTopology: no response mapping for request type ${message.type}`);
       }
@@ -14790,7 +15372,7 @@ var PlayaPlayer = (() => {
       this.writer = stream.writable.getWriter();
       this.reader = stream.readable.getReader();
       this.framer = new ControlStreamFramer(codec);
-      if (codec.version === 22) {
+      if (isDraft22(codec.version)) {
         void this.writer.closed.catch((err) => this.fail(err));
       }
     }
@@ -14905,7 +15487,7 @@ var PlayaPlayer = (() => {
           if (done) {
             for (const { message } of this.framer.drain())
               await this.dispatch(message);
-            if (this.codec.version === 22 && this.framer.bufferedBytes !== 0) {
+            if (isDraft22(this.codec.version) && this.framer.bufferedBytes !== 0) {
               throw new ProtocolViolationError("inbound request stream FIN with a truncated control message");
             }
             if (this.pendingUpdates.length > 0) {
@@ -15417,6 +15999,17 @@ var PlayaPlayer = (() => {
       } catch {
       }
     }
+    /** The request-stream draft (18, 22 or 23) of the current session's wire rules. */
+    requestStreamDraft() {
+      return requestStreamDraftOf(this.session.draftVersion);
+    }
+    /**
+     * The session close code for a violation: draft 23's more specific code when
+     * the detector supplied one (§12.2), else PROTOCOL_VIOLATION (0x3).
+     */
+    violationCode(code) {
+      return code !== void 0 && isDraft23(this.session.draftVersion) ? code : 3;
+    }
     /**
      * A fatal violation this endpoint detected (control-stream, request-stream,
      * data-stream, or datagram). Closes the local session and runs the one-shot
@@ -15500,7 +16093,7 @@ var PlayaPlayer = (() => {
       this.reportedStreamErrors.add(error);
       this.onError?.(error);
       if (error instanceof ProtocolViolationError) {
-        this.closeSessionFatal(error.message);
+        this.closeSessionFatal(error.message, this.violationCode(error.code));
       }
     }
     /** Called when a data stream header is decoded (§10.4). */
@@ -15796,7 +16389,8 @@ var PlayaPlayer = (() => {
      *   - Browser WebTransport may expose `transport.protocol`, allowing
      *     draft auto-detection ('moqt-16' → 16, 'moq-00' → 14).
      *   - Node/headless/polyfill WebTransport often has `protocol` undefined.
-     *   - When `protocol` is undefined, the connection defaults to draft 16.
+     *   - When `protocol` is undefined, the connection defaults to draft 23
+     *     (`DEFAULT_DRAFT_VERSION`).
      *   - **v14 callers MUST pass `new MoqtConnection(14)`**, because the first
      *     CLIENT_SETUP bytes are draft-specific and cannot be retried.
      * @param options.role Endpoint role (default `'client'`). The role sets
@@ -15810,7 +16404,7 @@ var PlayaPlayer = (() => {
       this.joiningFetchTimeoutMs = options?.joiningFetchTimeoutMs ?? 1e4;
       this.terminatedAliasTtlMs = options?.terminatedAliasTtlMs ?? 1e4;
       this.closeReportFallbackMs = options?.closeReportFallbackMs ?? 2e3;
-      this.configureForVersion(version ?? 16);
+      this.configureForVersion(version ?? DEFAULT_DRAFT_VERSION);
     }
     /**
      * (Re)configure all version-bound state for a draft version: the sans-I/O
@@ -15845,7 +16439,7 @@ var PlayaPlayer = (() => {
           this.handleControlStreamViolation(reason);
         };
         this.uniPair.onControlMessage = (message) => this.handleControlStreamMessage(message);
-        this.uniPair.onControlStreamViolation = (reason) => this.handleControlStreamViolation(reason);
+        this.uniPair.onControlStreamViolation = (reason, code) => this.handleControlStreamViolation(reason, code);
       } else {
         const topology = createBidiControlTopology(version);
         this.codec = topology.control;
@@ -15897,9 +16491,10 @@ var PlayaPlayer = (() => {
         if (this._role !== EndpointRole.CLIENT) {
           throw new Error("native QUIC server binding is not supported");
         }
-        const nativeDraft = transport.protocol === "moqt-18" ? 18 : transport.protocol === "moqt-22" ? 22 : void 0;
+        const negotiated = protocolToDraftVersion(transport.protocol);
+        const nativeDraft = negotiated !== void 0 && isRequestStreamDraft(negotiated) ? negotiated : void 0;
         if (nativeDraft === void 0) {
-          throw new ProtocolViolationError(`native QUIC negotiated ALPN ${JSON.stringify(transport.protocol ?? "")}; expected "moqt-18" or "moqt-22"`);
+          throw new ProtocolViolationError(`native QUIC negotiated ALPN ${JSON.stringify(transport.protocol ?? "")}; expected "moqt-18", "moqt-22" or "moqt-23"`);
         }
         if (this._requestedVersion !== void 0 && this._requestedVersion !== nativeDraft) {
           throw new Error(`native QUIC negotiated draft ${nativeDraft}, but this connection was created for draft ${this._requestedVersion}`);
@@ -16419,7 +17014,8 @@ var PlayaPlayer = (() => {
         this.reportPublishForwardObserverError(err);
       }
     }
-    async deliverRequestResponse(message, requestId) {
+    async deliverRequestResponse(received, requestId) {
+      const message = received.type === "REQUEST_OK" ? this.session.fetchOkFromRequestOk(requestId, { ...received, requestId }) ?? received : received;
       const stamped = { ...message, requestId };
       this.onQlogEvent?.({
         type: "control_message_parsed",
@@ -16802,10 +17398,10 @@ var PlayaPlayer = (() => {
      * onClose. No-op if the session is already closed (e.g. a local close FIN'd
      * the stream first), so we never double-close.
      */
-    handleControlStreamViolation(reason) {
+    handleControlStreamViolation(reason, code) {
       if (this.session.state === SessionState.CLOSED)
         return;
-      this.closeSessionFatal(reason);
+      this.closeSessionFatal(reason, this.violationCode(code));
     }
     /**
      * Subscribe to a raw track with per-subscription object delivery.
@@ -17892,7 +18488,7 @@ var PlayaPlayer = (() => {
         await this.executeActions(this.session.handleNamespaceStreamClosed(requestId));
       } catch (err) {
         if (err instanceof ProtocolViolationError) {
-          this.closeSessionFatal(err.message);
+          this.closeSessionFatal(err.message, this.violationCode(err.code));
           return;
         }
         this.onError?.(new MoqtConnectionError(err instanceof Error ? err.message : String(err), { errorSource: "control", ...err instanceof Error ? { cause: err } : {} }));
@@ -17938,7 +18534,7 @@ var PlayaPlayer = (() => {
         await this.executeActions(this.session.handleSubscribeTracksStreamClosed(requestId));
       } catch (err) {
         if (err instanceof ProtocolViolationError) {
-          this.closeSessionFatal(err.message);
+          this.closeSessionFatal(err.message, this.violationCode(err.code));
           return;
         }
         this.onError?.(new MoqtConnectionError(err instanceof Error ? err.message : String(err), { errorSource: "control", ...err instanceof Error ? { cause: err } : {} }));
@@ -19445,13 +20041,17 @@ var PlayaPlayer = (() => {
       if (state.fillWindow && !windowContains(state.fillWindow, fields.groupId, fields.objectId)) {
         throw new MoqtConnectionError(`Object ${fields.groupId}/${fields.objectId} is outside the fill range`, { errorSource: "data" });
       }
-      const { bytes, nextPrior } = encodeFetchObject18(fields, state.prior, state.isFirstObject, state.groupOrder);
+      const { bytes, nextPrior } = encodeFetchObject18(fields, state.prior, state.isFirstObject, state.groupOrder, this.requestStreamDraft());
       await state.writer.write(bytes);
       state.prior = nextPrior;
       state.isFirstObject = false;
     }
-    /** Send an End-of-Range marker on a FETCH response stream (§11.4.4.2). */
-    async sendFetchEndOfRange(streamId, nonExistent, groupId, objectId) {
+    /**
+     * Send an End-of-Range marker on a FETCH response stream (§11.4.4.2).
+     * @param kind The range kind (`'timed-out'` needs draft 22+, `'gone'` draft 23),
+     *   or `true` for non-existent and `false` for unknown.
+     */
+    async sendFetchEndOfRange(streamId, kind, groupId, objectId) {
       const state = this.fetchOutgoingStreams.get(streamId);
       if (!state)
         throw new MoqtConnectionError(`Unknown fetch stream ${streamId}`, { errorSource: "data" });
@@ -19460,10 +20060,32 @@ var PlayaPlayer = (() => {
       if (state.fillWindow && !windowContains(state.fillWindow, groupId, objectId)) {
         throw new MoqtConnectionError(`Range end ${groupId}/${objectId} is outside the fill range`, { errorSource: "data" });
       }
-      const { bytes, nextPrior } = encodeFetchEndOfRange18(nonExistent, groupId, objectId, state.prior, isDraft22(this.session.draftVersion) ? 22 : 18);
+      const { bytes, nextPrior } = encodeFetchEndOfRange18(kind, groupId, objectId, state.isFirstObject ? void 0 : state.prior, this.requestStreamDraft(), state.groupOrder);
       await state.writer.write(bytes);
       state.prior = nextPrior;
       state.isFirstObject = false;
+    }
+    /**
+     * Mark the last Object sent as the end of its Group or of the Track
+     * (draft-23 §11.4.2.2). Draft 23 requires End of Track after an Object known
+     * to end the Track, and End of Group after a response's last Object if it is
+     * known to end its Group (§3.2.2). Earlier drafts have no such marker, so this
+     * writes nothing there.
+     */
+    async sendFetchEndMarker(streamId, marker) {
+      const state = this.fetchOutgoingStreams.get(streamId);
+      if (!state)
+        throw new MoqtConnectionError(`Unknown fetch stream ${streamId}`, { errorSource: "data" });
+      if (state.closing)
+        throw new MoqtConnectionError(`Fetch stream ${streamId} is closing`, { errorSource: "data" });
+      if (!isDraft23(this.session.draftVersion))
+        return;
+      if (state.isFirstObject) {
+        throw new MoqtConnectionError(`Fetch stream ${streamId} has no Object to mark as ${marker}`, { errorSource: "data" });
+      }
+      const { bytes, nextPrior } = encodeFetchEndMarker23(marker, state.prior);
+      await state.writer.write(bytes);
+      state.prior = nextPrior;
     }
     /** Close (FIN) a FETCH response data stream. */
     async closeFetchStream(streamId) {
@@ -19732,7 +20354,7 @@ var PlayaPlayer = (() => {
         this.notifyClose(error.closeAction, "peer SETUP rejected");
         return;
       }
-      this.handleControlStreamViolation(reason);
+      this.handleControlStreamViolation(reason, error instanceof ProtocolViolationError ? error.code : void 0);
     }
     /**
      * Background loop: listen for incoming datagrams, decode each one.
@@ -19772,7 +20394,7 @@ var PlayaPlayer = (() => {
             this.onDatagram?.(datagram);
           } catch (err) {
             if (err instanceof ProtocolViolationError) {
-              this.closeSessionFatal(err.message);
+              this.closeSessionFatal(err.message, this.violationCode(err.code));
               return;
             }
             if (!(err instanceof RangeError)) {
@@ -19933,7 +20555,7 @@ var PlayaPlayer = (() => {
     /** Close the session on a PUBLISH-stream protocol violation; else surface it. */
     async failInboundRequest(err) {
       if (err instanceof ProtocolViolationError) {
-        this.closeSessionFatal(err.message);
+        this.closeSessionFatal(err.message, this.violationCode(err.code));
         return;
       }
       this.onError?.(new MoqtConnectionError(err.message, { errorSource: "control", cause: err }));
@@ -20606,7 +21228,7 @@ var PlayaPlayer = (() => {
         this.onStreamClosed?.(streamId, void 0, terminalKind(readTerminal));
       } catch (err) {
         if (err instanceof ProtocolViolationError) {
-          this.closeSessionFatal(err.message);
+          this.closeSessionFatal(err.message, this.violationCode(err.code));
           return;
         }
         const streamErrorCode = typeof err?.streamErrorCode === "number" ? err.streamErrorCode : void 0;
@@ -20696,7 +21318,7 @@ var PlayaPlayer = (() => {
           } else if (streamClass === "padding") {
             return { type: "discard" };
           } else if (streamClass !== void 0) {
-            throw new ProtocolViolationError(`Unknown data stream type (leading byte 0x${firstByte.toString(16)}) \u2014 expected SUBGROUP_HEADER or FETCH_HEADER (0x05)`);
+            throw new ProtocolViolationError(`Unknown data stream type (leading byte 0x${firstByte.toString(16)}) \u2014 expected SUBGROUP_HEADER or FETCH_HEADER (0x05)`, Number(SessionError.INVALID_STREAM_HEADER));
           }
         }
         const { value, done } = await reader.read();
@@ -20705,7 +21327,7 @@ var PlayaPlayer = (() => {
             return { type: "terminal", terminal: "local-discard" };
           }
           if (buf.length > 0) {
-            throw new ProtocolViolationError("Stream FIN received mid-header");
+            throw new ProtocolViolationError("Stream FIN received mid-header", Number(SessionError.TRUNCATED_OBJECT));
           }
           return { type: "terminal", terminal: "peer-fin" };
         }
@@ -20781,7 +21403,7 @@ var PlayaPlayer = (() => {
           if (this.locallyDiscardedReaders.has(reader))
             return "local-discard";
           if (buf.length > 0) {
-            throw new ProtocolViolationError("Stream FIN received mid-object");
+            throw new ProtocolViolationError("Stream FIN received mid-object", Number(SessionError.TRUNCATED_OBJECT));
           }
           if (header.isEndOfGroup) {
             const eogGap = {
@@ -20854,7 +21476,7 @@ var PlayaPlayer = (() => {
                 objectId: item.objectId,
                 ...item.publisherPriority !== void 0 ? { priority: item.publisherPriority } : {}
               };
-            } else {
+            } else if (!("marker" in item)) {
               const gapStatus = item.rawStatus ?? varint(item.nonExistent ? 3 : 0);
               const delivered = {
                 kind: "gap",
@@ -20878,7 +21500,7 @@ var PlayaPlayer = (() => {
           if (this.locallyDiscardedReaders.has(reader))
             return "local-discard";
           if (buf.length > 0) {
-            throw new ProtocolViolationError("Fetch stream FIN received mid-object");
+            throw new ProtocolViolationError("Fetch stream FIN received mid-object", Number(SessionError.TRUNCATED_OBJECT));
           }
           return "peer-fin";
         }
@@ -20949,13 +21571,15 @@ var PlayaPlayer = (() => {
                 return "local-discard";
               this.onObject?.(streamId, delivered);
             } else {
+              const status = "marker" in item ? item.marker === "end-of-track" ? 4 : 3 : item.nonExistent ? 3 : 0;
+              const objectId = "marker" in item && item.objectId < 0xffffffffffffffffn ? item.objectId + 1n : item.objectId;
               const delivered = {
                 kind: "gap",
                 trackAlias: 0n,
                 groupId: item.groupId,
                 subgroupId: 0n,
-                objectId: item.objectId,
-                status: varint(item.nonExistent ? 3 : 0)
+                objectId,
+                status: varint(status)
               };
               this.onObject?.(streamId, delivered);
             }
@@ -20970,7 +21594,7 @@ var PlayaPlayer = (() => {
           if (this.locallyDiscardedReaders.has(reader))
             return "local-discard";
           if (buf.length > 0) {
-            throw new ProtocolViolationError("Fetch stream FIN received mid-object");
+            throw new ProtocolViolationError("Fetch stream FIN received mid-object", Number(SessionError.TRUNCATED_OBJECT));
           }
           return "peer-fin";
         }
@@ -22608,6 +23232,7 @@ var PlayaPlayer = (() => {
         return "d14-absolute-varint";
       case 18:
       case 22:
+      case 23:
         return "d18-delta-vi64";
       default:
         return "d16-delta-varint";
@@ -32899,7 +33524,7 @@ var PlayaPlayer = (() => {
     /** Draft-aware FETCH INVALID_RANGE code: d14 uses 0x5 (§9.18); 16/18 use
      *  the common table's 0x11. */
     invalidRangeCode() {
-      return (this.connection?.draftVersion ?? this.config.draftVersion ?? 16) === 14 ? 0x5n : 0x11n;
+      return (this.connection?.draftVersion ?? this.config.draftVersion ?? DEFAULT_DRAFT_VERSION) === 14 ? 0x5n : 0x11n;
     }
     /** STRICT standards mode: fallbacks off the joining path are fatal. */
     strictCatalogMode() {
@@ -33163,7 +33788,7 @@ var PlayaPlayer = (() => {
         },
         log: (msg, ...args) => this.log.debug(msg, ...args)
       }, {
-        draft: conn.draftVersion ?? this.config.draftVersion ?? 16,
+        draft: conn.draftVersion ?? this.config.draftVersion ?? DEFAULT_DRAFT_VERSION,
         strict: this.strictCatalogMode()
       });
       this.catalogBootstrapCoord = coord;
@@ -33567,7 +34192,7 @@ var PlayaPlayer = (() => {
         },
         log: (msg, ...args) => this.log.debug(msg, ...args)
       }, {
-        draft: conn.draftVersion ?? this.config.draftVersion ?? 16,
+        draft: conn.draftVersion ?? this.config.draftVersion ?? DEFAULT_DRAFT_VERSION,
         // Legacy catalog mode (the explicit 'subscribe' compatibility option):
         // the candidate is a fresh AbsoluteStart subscribe — subscription-only
         // retrieval, ready on the first acceptable base; NEVER a Joining FETCH.
@@ -33966,7 +34591,7 @@ var PlayaPlayer = (() => {
      * never silently fatal.
      */
     normalizePublishDoneStatus(code) {
-      const draft = this.connection?.draftVersion ?? this.config.draftVersion ?? 16;
+      const draft = this.connection?.draftVersion ?? this.config.draftVersion ?? DEFAULT_DRAFT_VERSION;
       if (code === 0x2n)
         return "ended";
       if (code === 0x3n && !isDraft22(draft))
@@ -33976,6 +34601,8 @@ var PlayaPlayer = (() => {
       if (code === 0x1n)
         return "fatal-track";
       if (draft === 14 && code === 0x7n)
+        return "fatal-track";
+      if (isDraft23(draft) && code === 0x7n)
         return "fatal-track";
       if (draft !== 14 && code === 0x12n)
         return "fatal-track";
@@ -42722,8 +43349,10 @@ var PlayaPlayer = (() => {
   };
 
   // ../browser/dist/webtransport-factory.js
+  var DEFAULT_DRAFT_VERSION2 = 23;
   function createWebTransport(options) {
     return async (url) => {
+      const draftVersion = options?.draftVersion ?? DEFAULT_DRAFT_VERSION2;
       const buildOpts = (withProtocols) => {
         const opts = {};
         if (options?.certHash) {
@@ -42734,11 +43363,8 @@ var PlayaPlayer = (() => {
         }
         if (!withProtocols)
           return opts;
-        if (options?.draftVersion && options.draftVersion >= 15) {
-          opts.protocols = [`moqt-${options.draftVersion}`];
-        } else if (!options?.draftVersion) {
-          opts.protocols = ["moqt-16"];
-        }
+        if (draftVersion >= 15)
+          opts.protocols = [`moqt-${draftVersion}`];
         return opts;
       };
       const failureDetail = (err, protocols) => {
@@ -42784,9 +43410,10 @@ var PlayaPlayer = (() => {
         } else {
           await transport2.ready;
         }
-        if (options?.draftVersion === 22 && transport2.protocol !== "moqt-22") {
+        const required = draftVersion >= 22 ? draftVersion : void 0;
+        if (required !== void 0 && transport2.protocol !== `moqt-${required}`) {
           transport2.close();
-          throw new Error("WebTransport did not negotiate moqt-22 (draft-22 section 6.2.1)");
+          throw new Error(`WebTransport did not negotiate moqt-${required} (draft-${required} section 6.2.1)`);
         }
         return { transport: transport2, handshakeRttMs: performance.now() - connectStart };
       };
@@ -42798,7 +43425,7 @@ var PlayaPlayer = (() => {
         if (options?.signal?.aborted)
           throw options.signal.reason;
         const detail = failureDetail(err, firstOpts.protocols);
-        if (!firstOpts.protocols || options?.draftVersion === 22) {
+        if (!firstOpts.protocols || draftVersion >= 22) {
           throw new Error(`WebTransport connection failed: ${detail}`);
         }
         try {
@@ -42998,7 +43625,7 @@ var PlayaPlayer = (() => {
 
   // src/player.ts
   var DEFAULTS = {
-    draftVersion: 16,
+    draftVersion: 23,
     autoplay: false,
     volume: 1,
     muted: false,
