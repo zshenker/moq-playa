@@ -61,7 +61,7 @@ import type { AltGroup } from '@openmoq/msf';
 
 /** Default player options, merged with user-provided options. */
 const DEFAULTS = {
-  draftVersion: 16 as const,
+  draftVersion: 23 as const,
   autoplay: false,
   volume: 1,
   muted: false,

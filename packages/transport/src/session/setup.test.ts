@@ -17,7 +17,7 @@ describe('SetupGate', () => {
     let gate: SetupGate;
 
     beforeEach(() => {
-      gate = new SetupGate('client');
+      gate = new SetupGate('client', 16);
     });
 
     it('starts in IDLE state', () => {
@@ -137,7 +137,7 @@ describe('SetupGate', () => {
     let gate: SetupGate;
 
     beforeEach(() => {
-      gate = new SetupGate('server');
+      gate = new SetupGate('server', 16);
     });
 
     it('starts in IDLE state', () => {
@@ -200,7 +200,7 @@ describe('SetupGate', () => {
 
   describe('message validation', () => {
     it('client rejects receiving messages before sending CLIENT_SETUP', () => {
-      const gate = new SetupGate('client');
+      const gate = new SetupGate('client', 16);
 
       expect(() =>
         gate.validateMessage({ type: 'GOAWAY', newSessionUri: '' }),
@@ -208,7 +208,7 @@ describe('SetupGate', () => {
     });
 
     it('server rejects non-CLIENT_SETUP as first message', () => {
-      const gate = new SetupGate('server');
+      const gate = new SetupGate('server', 16);
 
       expect(() =>
         gate.validateMessage({ type: 'GOAWAY', newSessionUri: '' }),
@@ -223,7 +223,7 @@ describe('SetupGate', () => {
     });
 
     it('server accepts CLIENT_SETUP as first message', () => {
-      const gate = new SetupGate('server');
+      const gate = new SetupGate('server', 16);
 
       expect(() =>
         gate.validateMessage({
@@ -234,7 +234,7 @@ describe('SetupGate', () => {
     });
 
     it('client rejects non-SERVER_SETUP while pending', () => {
-      const gate = new SetupGate('client');
+      const gate = new SetupGate('client', 16);
       gate.createClientSetup();
 
       expect(() =>
@@ -252,7 +252,7 @@ describe('SetupGate', () => {
 
   describe('unknown parameters', () => {
     it('ignores unknown setup parameters', () => {
-      const gate = new SetupGate('server');
+      const gate = new SetupGate('server', 16);
 
       const clientParams: Parameters = new Map();
       clientParams.set(varint(SetupParam.MAX_REQUEST_ID), [varint(100n)]);
@@ -271,7 +271,7 @@ describe('SetupGate', () => {
 
   describe('getResult', () => {
     it('throws if called before handshake complete', () => {
-      const gate = new SetupGate('client');
+      const gate = new SetupGate('client', 16);
       expect(() => gate.getResult()).toThrow();
 
       gate.createClientSetup();
@@ -279,7 +279,7 @@ describe('SetupGate', () => {
     });
 
     it('returns result after handshake complete', () => {
-      const gate = new SetupGate('client');
+      const gate = new SetupGate('client', 16);
       gate.createClientSetup();
 
       const serverSetup: ServerSetup = {
@@ -296,7 +296,7 @@ describe('SetupGate', () => {
   describe('default MAX_REQUEST_ID', () => {
     it('defaults to 0 if not provided (§9.3.1.3)', () => {
       // Per §9.3.1.3: absent MAX_REQUEST_ID means 0 (peer MUST NOT send requests).
-      const gate = new SetupGate('client');
+      const gate = new SetupGate('client', 16);
       gate.createClientSetup();
 
       const serverSetup: ServerSetup = {
@@ -311,7 +311,7 @@ describe('SetupGate', () => {
 
   describe('PATH validation (§9.3.1.2)', () => {
     it('accepts valid absolute paths', () => {
-      const gate = new SetupGate('server');
+      const gate = new SetupGate('server', 16);
 
       const validPaths = [
         '/',
@@ -334,7 +334,7 @@ describe('SetupGate', () => {
       ];
 
       for (const path of validPaths) {
-        const newGate = new SetupGate('server');
+        const newGate = new SetupGate('server', 16);
         const clientParams: Parameters = new Map();
         clientParams.set(varint(SetupParam.PATH), [new TextEncoder().encode(path)]);
 
@@ -348,7 +348,7 @@ describe('SetupGate', () => {
     });
 
     it('rejects paths not starting with /', () => {
-      const gate = new SetupGate('server');
+      const gate = new SetupGate('server', 16);
 
       const clientParams: Parameters = new Map();
       clientParams.set(varint(SetupParam.PATH), [new TextEncoder().encode('live')]);
@@ -367,7 +367,7 @@ describe('SetupGate', () => {
     });
 
     it('rejects malformed percent encoding', () => {
-      const gate = new SetupGate('server');
+      const gate = new SetupGate('server', 16);
 
       const clientParams: Parameters = new Map();
       clientParams.set(varint(SetupParam.PATH), [new TextEncoder().encode('/path/%GG')]);
@@ -412,7 +412,7 @@ describe('SetupGate', () => {
       ];
 
       for (const authority of validAuthorities) {
-        const gate = new SetupGate('server');
+        const gate = new SetupGate('server', 16);
         const clientParams: Parameters = new Map();
         clientParams.set(varint(SetupParam.AUTHORITY), [new TextEncoder().encode(authority)]);
 
@@ -426,7 +426,7 @@ describe('SetupGate', () => {
     });
 
     it('rejects empty authority', () => {
-      const gate = new SetupGate('server');
+      const gate = new SetupGate('server', 16);
 
       const clientParams: Parameters = new Map();
       clientParams.set(varint(SetupParam.AUTHORITY), [new TextEncoder().encode('')]);
@@ -446,7 +446,7 @@ describe('SetupGate', () => {
 
     it('rejects empty host with port (§3.1.2)', () => {
       // §3.1.2: "The authority portion MUST NOT contain an empty host portion"
-      const gate = new SetupGate('server');
+      const gate = new SetupGate('server', 16);
 
       const clientParams: Parameters = new Map();
       clientParams.set(varint(SetupParam.AUTHORITY), [new TextEncoder().encode(':443')]);
@@ -465,7 +465,7 @@ describe('SetupGate', () => {
     });
 
     it('rejects unclosed IPv6 bracket', () => {
-      const gate = new SetupGate('server');
+      const gate = new SetupGate('server', 16);
 
       const clientParams: Parameters = new Map();
       clientParams.set(varint(SetupParam.AUTHORITY), [new TextEncoder().encode('[::1')]);
@@ -479,7 +479,7 @@ describe('SetupGate', () => {
     });
 
     it('rejects invalid port number', () => {
-      const gate = new SetupGate('server');
+      const gate = new SetupGate('server', 16);
 
       const clientParams: Parameters = new Map();
       clientParams.set(varint(SetupParam.AUTHORITY), [new TextEncoder().encode('example.com:99999')]);
@@ -493,7 +493,7 @@ describe('SetupGate', () => {
     });
 
     it('rejects malformed IPv6 with multiple zero-compression', () => {
-      const gate = new SetupGate('server');
+      const gate = new SetupGate('server', 16);
 
       const clientParams: Parameters = new Map();
       // [:::] has three consecutive colons, which is two overlapping :: compressions
@@ -513,7 +513,7 @@ describe('SetupGate', () => {
     });
 
     it('rejects IPv6 with too many segments', () => {
-      const gate = new SetupGate('server');
+      const gate = new SetupGate('server', 16);
 
       const clientParams: Parameters = new Map();
       // Too many segments without compression
@@ -531,7 +531,7 @@ describe('SetupGate', () => {
     });
 
     it('rejects IPv6 with invalid segment', () => {
-      const gate = new SetupGate('server');
+      const gate = new SetupGate('server', 16);
 
       const clientParams: Parameters = new Map();
       // 'gggg' is not valid hex
@@ -546,7 +546,7 @@ describe('SetupGate', () => {
     });
 
     it('rejects IPv6 with invalid embedded IPv4', () => {
-      const gate = new SetupGate('server');
+      const gate = new SetupGate('server', 16);
 
       const clientParams: Parameters = new Map();
       // 999 > 255
@@ -564,7 +564,7 @@ describe('SetupGate', () => {
     });
 
     it('rejects IPv6 with embedded IPv4 having leading zeros', () => {
-      const gate = new SetupGate('server');
+      const gate = new SetupGate('server', 16);
 
       const clientParams: Parameters = new Map();
       // Leading zeros are forbidden per RFC3986 dec-octet
@@ -582,7 +582,7 @@ describe('SetupGate', () => {
     });
 
     it('rejects IPv6 where :: compresses zero segments (trailing ::)', () => {
-      const gate = new SetupGate('server');
+      const gate = new SetupGate('server', 16);
 
       const clientParams: Parameters = new Map();
       // 8 segments plus :: means :: compresses nothing
@@ -600,7 +600,7 @@ describe('SetupGate', () => {
     });
 
     it('rejects IPv6 where :: compresses zero segments (leading ::)', () => {
-      const gate = new SetupGate('server');
+      const gate = new SetupGate('server', 16);
 
       const clientParams: Parameters = new Map();
       // :: followed by 8 segments means :: compresses nothing
@@ -618,7 +618,7 @@ describe('SetupGate', () => {
     });
 
     it('rejects IPv6 with stray leading colon', () => {
-      const gate = new SetupGate('server');
+      const gate = new SetupGate('server', 16);
 
       const clientParams: Parameters = new Map();
       // :1::2 has a single : before 1, not part of ::
@@ -633,7 +633,7 @@ describe('SetupGate', () => {
     });
 
     it('rejects IPv6 with stray trailing colon', () => {
-      const gate = new SetupGate('server');
+      const gate = new SetupGate('server', 16);
 
       const clientParams: Parameters = new Map();
       // 1::2: has a single : after 2, not part of ::
@@ -652,7 +652,7 @@ describe('SetupGate', () => {
 
   describe('AUTHORIZATION_TOKEN parsing (§9.2.2.1, §9.3.1.5)', () => {
     it('parses MAX_AUTH_TOKEN_CACHE_SIZE from CLIENT_SETUP', () => {
-      const gate = new SetupGate('server');
+      const gate = new SetupGate('server', 16);
 
       const params: Parameters = new Map();
       params.set(varint(SetupParam.MAX_AUTH_TOKEN_CACHE_SIZE), [varint(1024n)]);
@@ -666,7 +666,7 @@ describe('SetupGate', () => {
     });
 
     it('parses MAX_AUTH_TOKEN_CACHE_SIZE from SERVER_SETUP', () => {
-      const gate = new SetupGate('client');
+      const gate = new SetupGate('client', 16);
       gate.createClientSetup();
 
       const params: Parameters = new Map();
@@ -681,7 +681,7 @@ describe('SetupGate', () => {
     });
 
     it('parses REGISTER tokens from CLIENT_SETUP', () => {
-      const gate = new SetupGate('server');
+      const gate = new SetupGate('server', 16);
 
       const tokenBytes = encodeAuthorizationToken({
         aliasType: AliasType.REGISTER,
@@ -703,7 +703,7 @@ describe('SetupGate', () => {
     });
 
     it('parses USE_VALUE tokens from CLIENT_SETUP', () => {
-      const gate = new SetupGate('server');
+      const gate = new SetupGate('server', 16);
 
       const tokenBytes = encodeAuthorizationToken({
         aliasType: AliasType.USE_VALUE,
@@ -724,7 +724,7 @@ describe('SetupGate', () => {
     });
 
     it('parses multiple tokens from CLIENT_SETUP', () => {
-      const gate = new SetupGate('server');
+      const gate = new SetupGate('server', 16);
 
       const token1 = encodeAuthorizationToken({
         aliasType: AliasType.REGISTER,
@@ -752,7 +752,7 @@ describe('SetupGate', () => {
     it('rejects DELETE in CLIENT_SETUP (§9.2.2.1)', () => {
       // §9.2.2.1: "If a server receives Alias Type DELETE (0x0) or USE_ALIAS (0x2)
       // in a CLIENT_SETUP message, it MUST close the session with a PROTOCOL_VIOLATION."
-      const gate = new SetupGate('server');
+      const gate = new SetupGate('server', 16);
 
       const tokenBytes = encodeAuthorizationToken({
         aliasType: AliasType.DELETE,
@@ -779,7 +779,7 @@ describe('SetupGate', () => {
     });
 
     it('rejects USE_ALIAS in CLIENT_SETUP (§9.2.2.1)', () => {
-      const gate = new SetupGate('server');
+      const gate = new SetupGate('server', 16);
 
       const tokenBytes = encodeAuthorizationToken({
         aliasType: AliasType.USE_ALIAS,
@@ -796,7 +796,7 @@ describe('SetupGate', () => {
     });
 
     it('rejects malformed AUTHORIZATION_TOKEN', () => {
-      const gate = new SetupGate('server');
+      const gate = new SetupGate('server', 16);
 
       // Truncated: just alias type, no alias field
       const params: Parameters = new Map();
@@ -811,7 +811,7 @@ describe('SetupGate', () => {
     it('rejects malformed AUTHORIZATION_TOKEN with KEY_VALUE_FORMATTING_ERROR code (§9.2.2.1)', () => {
       // §9.2.2.1: "If the Token structure cannot be decoded, the receiver
       //            MUST close the Session with KEY_VALUE_FORMATTING_ERROR."
-      const gate = new SetupGate('server');
+      const gate = new SetupGate('server', 16);
 
       // Truncated: just alias type, no alias field
       const params: Parameters = new Map();
@@ -830,7 +830,7 @@ describe('SetupGate', () => {
     });
 
     it('includes MAX_AUTH_TOKEN_CACHE_SIZE in createClientSetup', () => {
-      const gate = new SetupGate('client');
+      const gate = new SetupGate('client', 16);
       const msg = gate.createClientSetup({ maxAuthTokenCacheSize: varint(2048n) });
       const values = msg.parameters.get(varint(SetupParam.MAX_AUTH_TOKEN_CACHE_SIZE));
       expect(values).toBeDefined();
@@ -838,7 +838,7 @@ describe('SetupGate', () => {
     });
 
     it('includes MAX_AUTH_TOKEN_CACHE_SIZE in createServerSetup', () => {
-      const gate = new SetupGate('server');
+      const gate = new SetupGate('server', 16);
       gate.handleClientSetup({ type: 'CLIENT_SETUP', parameters: new Map() });
       const msg = gate.createServerSetup({ maxAuthTokenCacheSize: varint(4096n) });
       const values = msg.parameters.get(varint(SetupParam.MAX_AUTH_TOKEN_CACHE_SIZE));

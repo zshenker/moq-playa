@@ -36,7 +36,7 @@ describe('getRequestPolicy', () => {
     }
   });
 
-  it('defaults to draft-16 policy', () => {
-    expect(getRequestPolicy()).toEqual(getRequestPolicy(16));
+  it('defaults to the draft-23 policy', () => {
+    expect(getRequestPolicy()).toEqual(getRequestPolicy(23));
   });
 });

@@ -19,8 +19,8 @@ describe('getProtocolProfile', () => {
     });
   }
 
-  it('defaults to draft-16', () => {
-    expect(getProtocolProfile().version).toBe(16);
+  it('defaults to draft-23', () => {
+    expect(getProtocolProfile().version).toBe(23);
   });
 });
 

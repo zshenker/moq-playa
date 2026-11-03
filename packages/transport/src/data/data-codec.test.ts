@@ -30,7 +30,7 @@ describe('createDataCodec', () => {
   it('exposes its version', () => {
     expect(createDataCodec(16).version).toBe(16);
     expect(createDataCodec(14).version).toBe(14);
-    expect(createDataCodec().version).toBe(16); // defaults to 16
+    expect(createDataCodec().version).toBe(23); // defaults to 23
   });
 
   it('exposes a draft-18 data codec', () => {
