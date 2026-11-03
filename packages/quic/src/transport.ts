@@ -22,7 +22,7 @@ interface MoqtSetupRouting {
 }
 
 /** The MOQT ALPN tokens the native binding can negotiate. */
-export type MoqtQuicProtocol = 'moqt-18' | 'moqt-22';
+export type MoqtQuicProtocol = 'moqt-18' | 'moqt-22' | 'moqt-23';
 
 /** Native QUIC transport plus the routing fields required in MOQT SETUP. */
 export interface MoqtQuicTransport extends WebTransportLike {
@@ -122,7 +122,7 @@ export class NodeQuicTransport implements MoqtQuicTransport {
     private readonly incomingBidi: BoundedReadableQueue<WebTransportBidirectionalStream>,
     private readonly incomingDatagrams: BoundedReadableQueue<Uint8Array>,
     sessionError: () => unknown,
-    readonly protocol: MoqtQuicProtocol = 'moqt-18',
+    readonly protocol: MoqtQuicProtocol = 'moqt-23',
   ) {
     this.maxDatagramSize = session.maxDatagramSize;
     this.incomingUnidirectionalStreams = incomingUni.readable;

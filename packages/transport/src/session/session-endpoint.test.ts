@@ -21,7 +21,7 @@ const namespace = [new Uint8Array([0x6c, 0x69, 0x76, 0x65])];
 const name = new Uint8Array([0x76, 0x69, 0x64, 0x65, 0x6f]);
 
 function established(): Session {
-  const session = new Session(EndpointRole.CLIENT);
+  const session = new Session(EndpointRole.CLIENT, 16);
   session.initiateSetup({ maxRequestId: varint(100n) });
   const serverSetup: ServerSetup = {
     type: 'SERVER_SETUP',
@@ -116,7 +116,7 @@ describe('handleControlMessage(msg, endpoint?)', () => {
 
 describe('handleControlMessage — REQUEST_UPDATE endpoint context', () => {
   function establishedServer(): Session {
-    const s = new Session(EndpointRole.SERVER);
+    const s = new Session(EndpointRole.SERVER, 16);
     const clientSetup: ClientSetup = { type: 'CLIENT_SETUP', parameters: new Map() };
     s.handleControlMessage(clientSetup);
     s.completeSetup({ maxRequestId: varint(200n) });

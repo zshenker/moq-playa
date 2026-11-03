@@ -20,7 +20,7 @@
  * @module
  */
 
-import { ProtocolViolationError, type ControlCodec, type ControlMessage, type DecodedControlMessage } from '@openmoq/transport';
+import { isDraft22, ProtocolViolationError, type ControlCodec, type ControlMessage, type DecodedControlMessage } from '@openmoq/transport';
 import { ControlStreamFramer } from '../framer.js';
 import type { WebTransportBidirectionalStream } from '../types.js';
 
@@ -89,7 +89,7 @@ export class InboundRequestStreamContext {
     this.writer = stream.writable.getWriter();
     this.reader = stream.readable.getReader();
     this.framer = new ControlStreamFramer(codec);
-    if (codec.version === 22) {
+    if (isDraft22(codec.version)) {
       // STOP_SENDING can arrive after the peer has FINed its other direction.
       // The read loop is then over, so cancellation must also observe writes.
       void this.writer.closed.catch((err: unknown) => this.fail(err));
@@ -200,7 +200,7 @@ export class InboundRequestStreamContext {
         if (value) this.framer.push(value);
         if (done) {
           for (const { message } of this.framer.drain()) await this.dispatch(message);
-          if (this.codec.version === 22 && this.framer.bufferedBytes !== 0) {
+          if (isDraft22(this.codec.version) && this.framer.bufferedBytes !== 0) {
             throw new ProtocolViolationError('inbound request stream FIN with a truncated control message');
           }
           if (this.pendingUpdates.length > 0) {

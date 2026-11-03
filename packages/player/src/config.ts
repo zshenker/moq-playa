@@ -171,7 +171,8 @@ export interface ConnectionConfig {
 
   /**
    * MOQT draft version for protocol wire format.
-   * Default: 16 (default supported draft). Set to 14 for interop with draft-14 servers (moq-rs, etc.).
+   * Default: 23 (the default supported draft). Set 22, 18 or 16 for relays on
+   * those drafts, or 14 for draft-14 servers (moq-rs, etc.).
    *
    * Passed to `new MoqtConnection(draftVersion)` when using `createConnection`.
    * @see draft-ietf-moq-transport-16

@@ -341,7 +341,7 @@ function encodeServerSetup(): Uint8Array {
 async function connectAdapter(
   mock: MockTransport,
 ): Promise<MoqtConnection> {
-  const adapter = new MoqtConnection();
+  const adapter = new MoqtConnection(16);
   const connectPromise = adapter.connect(mock.transport);
   await flush();
   mock.pushControlBytes(encodeServerSetup());
@@ -360,7 +360,7 @@ async function connectPublisherWithAlias(
   mock: MockTransport,
   alias: bigint,
 ): Promise<MoqtConnection> {
-  const adapter = new MoqtConnection();
+  const adapter = new MoqtConnection(16);
   const connectPromise = adapter.connect(mock.transport, { maxRequestId: varint(100) });
   await flush();
   mock.pushControlBytes(encodeServerSetup());
@@ -433,7 +433,7 @@ describe('MoqtConnection', () => {
   describe('connect()', () => {
     it('opens a bidirectional stream for the control channel', async () => {
       const mock = createMockTransport();
-      const adapter = new MoqtConnection();
+      const adapter = new MoqtConnection(16);
 
       const connectPromise = adapter.connect(mock.transport);
       await flush();
@@ -445,7 +445,7 @@ describe('MoqtConnection', () => {
 
     it('sends CLIENT_SETUP as the first message on the control stream', async () => {
       const mock = createMockTransport();
-      const adapter = new MoqtConnection();
+      const adapter = new MoqtConnection(16);
 
       const connectPromise = adapter.connect(mock.transport);
       await flush();
@@ -459,7 +459,7 @@ describe('MoqtConnection', () => {
 
     it('transitions to ESTABLISHED after receiving SERVER_SETUP', async () => {
       const mock = createMockTransport();
-      const adapter = new MoqtConnection();
+      const adapter = new MoqtConnection(16);
 
       const connectPromise = adapter.connect(mock.transport);
       await flush();
@@ -471,7 +471,7 @@ describe('MoqtConnection', () => {
 
     it('rejects with ProtocolViolationError if control stream closes before SERVER_SETUP (§3.2)', async () => {
       const mock = createMockTransport();
-      const adapter = new MoqtConnection();
+      const adapter = new MoqtConnection(16);
 
       const connectPromise = adapter.connect(mock.transport);
       await flush();
@@ -488,7 +488,7 @@ describe('MoqtConnection', () => {
 
     it('rejects if setup fails (e.g., server sends PATH — §9.3)', async () => {
       const mock = createMockTransport();
-      const adapter = new MoqtConnection();
+      const adapter = new MoqtConnection(16);
 
       const connectPromise = adapter.connect(mock.transport);
       await flush();
@@ -509,7 +509,7 @@ describe('MoqtConnection', () => {
 
     it('does not start background loops after setup failure (§9.3)', async () => {
       const mock = createMockTransport();
-      const adapter = new MoqtConnection();
+      const adapter = new MoqtConnection(16);
 
       const connectPromise = adapter.connect(mock.transport);
       await flush();
@@ -533,7 +533,7 @@ describe('MoqtConnection', () => {
 
     it('passes SetupOptions through to session', async () => {
       const mock = createMockTransport();
-      const adapter = new MoqtConnection();
+      const adapter = new MoqtConnection(16);
 
       const connectPromise = adapter.connect(mock.transport, {
         maxRequestId: varint(100),
@@ -550,7 +550,7 @@ describe('MoqtConnection', () => {
       // §9.3.1.2: "PATH ... MUST NOT be used ... when WebTransport is used."
       // MoqtConnection is WebTransport-specific, so it must strip path.
       const mock = createMockTransport();
-      const adapter = new MoqtConnection();
+      const adapter = new MoqtConnection(16);
 
       const connectPromise = adapter.connect(mock.transport, {
         maxRequestId: varint(100),
@@ -573,7 +573,7 @@ describe('MoqtConnection', () => {
 
     it('passes explicit authority option for relay tenant routing', async () => {
       const mock = createMockTransport();
-      const adapter = new MoqtConnection();
+      const adapter = new MoqtConnection(16);
 
       const connectPromise = adapter.connect(mock.transport, {
         maxRequestId: varint(100),
@@ -610,7 +610,7 @@ describe('MoqtConnection', () => {
 
     it('invokes onMessage callback for each received control message', async () => {
       const mock = createMockTransport();
-      const adapter = new MoqtConnection();
+      const adapter = new MoqtConnection(16);
       const onMessage = vi.fn();
       adapter.onMessage = onMessage;
 
@@ -661,7 +661,7 @@ describe('MoqtConnection', () => {
   describe('error handling', () => {
     it('invokes onClose callback when control stream closes after setup', async () => {
       const mock = createMockTransport();
-      const adapter = new MoqtConnection();
+      const adapter = new MoqtConnection(16);
       const onClose = vi.fn();
       adapter.onClose = onClose;
 
@@ -678,7 +678,7 @@ describe('MoqtConnection', () => {
 
     it('invokes onError callback when session produces protocol error', async () => {
       const mock = createMockTransport();
-      const adapter = new MoqtConnection();
+      const adapter = new MoqtConnection(16);
       const onError = vi.fn();
       adapter.onError = onError;
 
@@ -2103,7 +2103,7 @@ describe('MoqtConnection', () => {
     it('control_message_created includes CLIENT_SETUP during connect', async () => {
       const mock = createMockTransport();
       const events: any[] = [];
-      const adapter = new MoqtConnection();
+      const adapter = new MoqtConnection(16);
       adapter.onQlogEvent = (e) => events.push(e);
 
       const connectPromise = adapter.connect(mock.transport);
@@ -2120,7 +2120,7 @@ describe('MoqtConnection', () => {
     it('control_message_parsed fired on SERVER_SETUP receive', async () => {
       const mock = createMockTransport();
       const events: any[] = [];
-      const adapter = new MoqtConnection();
+      const adapter = new MoqtConnection(16);
       adapter.onQlogEvent = (e) => events.push(e);
 
       const connectPromise = adapter.connect(mock.transport);
@@ -3523,7 +3523,7 @@ describe('MoqtConnection draft-14', () => {
         readable: { getReader: () => countingReader } as unknown as ReadableStream<Uint8Array>,
       },
     };
-    const adapter = new MoqtConnection();
+    const adapter = new MoqtConnection(16);
     const connectPromise = adapter.connect(transport);
     await flush();
     mock.pushControlBytes(encodeServerSetup());
@@ -3563,7 +3563,7 @@ describe('MoqtConnection draft-14', () => {
         readable: { getReader: () => gatedReader } as unknown as ReadableStream<Uint8Array>,
       },
     };
-    const adapter = new MoqtConnection();
+    const adapter = new MoqtConnection(16);
     const connectPromise = adapter.connect(transport);
     await flush();
     mock.pushControlBytes(encodeServerSetup());
@@ -4423,9 +4423,9 @@ describe('MoqtConnection draft-14', () => {
   // ── Protocol negotiation (§3.1) ─────────────────────────────────
 
   describe('protocol negotiation (§3.1)', () => {
-    it('no explicit version + undefined protocol defaults to draft 16', () => {
+    it('no explicit version + undefined protocol defaults to draft 23', () => {
       const adapter = new MoqtConnection();
-      expect(adapter.draftVersion).toBe(16);
+      expect(adapter.draftVersion).toBe(23);
     });
 
     it('explicit new MoqtConnection(14) uses draft 14 regardless of protocol', () => {
@@ -4622,7 +4622,7 @@ describe('MoqtConnection draft-14', () => {
     async function connectPublisherAdapter(
       mock: MockTransport,
     ): Promise<MoqtConnection> {
-      const adapter = new MoqtConnection();
+      const adapter = new MoqtConnection(16);
       const connectPromise = adapter.connect(mock.transport, {
         maxRequestId: varint(100),
       });
@@ -4773,7 +4773,7 @@ describe('MoqtConnection draft-14', () => {
         // already know is unrecoverable must not remain open waiting for it —
         // so the close must be issued synchronously, before the rollback await.
         const mock = createMockTransport();
-        const adapter = new MoqtConnection();
+        const adapter = new MoqtConnection(16);
         const connectPromise = adapter.connect(mock.transport, { maxRequestId: varint(100) });
         await flush();
         mock.pushControlBytes(encodeServerSetup());
@@ -4812,7 +4812,7 @@ describe('MoqtConnection draft-14', () => {
         // be reported as success, and no ghost established subscription with
         // live routing may survive.
         const mock = createMockTransport();
-        const adapter = new MoqtConnection();
+        const adapter = new MoqtConnection(16);
         const connectPromise = adapter.connect(mock.transport, { maxRequestId: varint(100) });
         await flush();
         mock.pushControlBytes(encodeServerSetup());
@@ -6280,7 +6280,7 @@ describe('outbound PUBLISH forward state (draft-16)', () => {
   }> {
     const mock = createMockTransport();
     // Advertise a request-ID budget so the relay's own REQUEST_UPDATE (id 1, 3) is in range.
-    const adapter = new MoqtConnection();
+    const adapter = new MoqtConnection(16);
     const connectPromise = adapter.connect(mock.transport, { maxRequestId: varint(100) });
     await flush();
     mock.pushControlBytes(encodeServerSetup());

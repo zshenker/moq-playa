@@ -100,7 +100,7 @@ async function run(caseFn: (d: number, s: CaseScope) => Promise<void>, sc: Scena
 async function main() {
   const previousDraft = process.env.MOQT_DRAFT;
   try {
-    for (const draft of [16, 18, 22]) {
+    for (const draft of [16, 18, 22, 23]) {
       for (const raw of [String(draft), `draft-${draft}`]) {
         process.env.MOQT_DRAFT = raw;
         assert.equal(selectDraft(), draft);
@@ -112,7 +112,7 @@ async function main() {
       assert.throws(() => selectDraft(), /unsupported MOQT_DRAFT/);
     }
     delete process.env.MOQT_DRAFT;
-    assert.equal(selectDraft(), 18);
+    assert.equal(selectDraft(), 23);
   } finally {
     if (previousDraft === undefined) delete process.env.MOQT_DRAFT;
     else process.env.MOQT_DRAFT = previousDraft;

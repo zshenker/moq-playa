@@ -21,7 +21,7 @@ const NAME = new Uint8Array([0x76]);
 const LOC: Location = { group: varint(2n), object: varint(3n) };
 
 function establishedClient(): Session {
-  const s = new Session(EndpointRole.CLIENT);
+  const s = new Session(EndpointRole.CLIENT, 16);
   s.initiateSetup({ maxRequestId: varint(100n) });
   s.handleControlMessage({
     type: 'SERVER_SETUP',
@@ -30,7 +30,7 @@ function establishedClient(): Session {
   return s;
 }
 function establishedServer(): Session {
-  const s = new Session(EndpointRole.SERVER);
+  const s = new Session(EndpointRole.SERVER, 16);
   s.handleControlMessage({ type: 'CLIENT_SETUP', parameters: new Map() } as ClientSetup);
   s.completeSetup({ maxRequestId: varint(200n) });
   return s;

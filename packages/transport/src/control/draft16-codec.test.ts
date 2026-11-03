@@ -22,9 +22,9 @@ describe('Draft16Codec', () => {
     expect(codec.version).toBe(16);
   });
 
-  it('createControlCodec() defaults to version 16', () => {
+  it('createControlCodec() defaults to version 23', () => {
     const defaultCodec = createControlCodec();
-    expect(defaultCodec.version).toBe(16);
+    expect(defaultCodec.version).toBe(23);
   });
 
   it('encode produces identical bytes to encodeControlMessage()', () => {
