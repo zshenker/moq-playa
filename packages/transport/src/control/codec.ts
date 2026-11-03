@@ -78,7 +78,7 @@ export interface ControlCodec {
 
 /**
  * Create a ControlCodec for the given draft version.
- * @param version Draft version (default: {@link DEFAULT_DRAFT_VERSION})
+ * @param version Draft version (default: {@link DEFAULT_DRAFT_VERSION}, 23)
  */
 export function createControlCodec(version: DraftVersion = DEFAULT_DRAFT_VERSION): ControlCodec {
   switch (version) {

@@ -13,7 +13,7 @@
  * Supported MoQT draft versions.
  *
  * - `14` — draft-ietf-moq-transport-14 (legacy, normalized to 16 at decode)
- * - `16` — draft-ietf-moq-transport-16 (default)
+ * - `16` — draft-ietf-moq-transport-16
  * - `18` — draft-ietf-moq-transport-18 (fully wired: control + data codecs,
  *   uni-pair topology, request profile)
  * - `22` — draft-ietf-moq-transport-22 (the draft-18 stream model with a typed
@@ -31,7 +31,7 @@ export type DraftVersion = 14 | 16 | 18 | 22 | 23;
  * `Session`, and (in `@openmoq/webtransport`) a `MoqtConnection` whose
  * transport negotiated no protocol.
  */
-export const DEFAULT_DRAFT_VERSION: DraftVersion = 16;
+export const DEFAULT_DRAFT_VERSION: DraftVersion = 23;
 
 /** Draft versions with a fully-wired wire codec today. */
 export const WIRED_DRAFTS: readonly DraftVersion[] = [14, 16, 18, 22, 23];

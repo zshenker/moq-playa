@@ -45,7 +45,7 @@ export interface WebTransportFactoryOptions {
    * - 18 → `["moqt-18"]`
    * - 16 → `["moqt-16"]`
    * - 14 → no protocols sent (h3 ALPN fallback, in-band CLIENT_SETUP negotiation)
-   * - undefined → `["moqt-16"]` (the default draft, {@link DEFAULT_DRAFT_VERSION})
+   * - undefined → `["moqt-23"]` (the default draft, {@link DEFAULT_DRAFT_VERSION})
    *
    * @see draft-ietf-moq-transport-16 §3.1 (version negotiation)
    * @see W3C WebTransport §3.3 (WT-Available-Protocols)
@@ -54,7 +54,7 @@ export interface WebTransportFactoryOptions {
 }
 
 /** The draft offered when the caller names none. */
-const DEFAULT_DRAFT_VERSION = 16;
+const DEFAULT_DRAFT_VERSION = 23;
 
 /**
  * Create a `createTransport` factory for the player config.
@@ -71,7 +71,7 @@ export function createWebTransport(
   return async (url: string): Promise<WebTransportLike> => {
     // Build options as a plain object — WebTransportOptions varies by environment.
     // §3.1: WT-Available-Protocols for MOQT version negotiation.
-    // Default: offer ['moqt-16']. Draft-14 does not send protocols —
+    // Default: offer ['moqt-23']. Draft-14 does not send protocols —
     // it relies on h3 ALPN with in-band CLIENT_SETUP version list.
     const draftVersion = options?.draftVersion ?? DEFAULT_DRAFT_VERSION;
     const buildOpts = (withProtocols: boolean): any => {

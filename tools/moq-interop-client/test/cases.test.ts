@@ -112,7 +112,7 @@ async function main() {
       assert.throws(() => selectDraft(), /unsupported MOQT_DRAFT/);
     }
     delete process.env.MOQT_DRAFT;
-    assert.equal(selectDraft(), 18);
+    assert.equal(selectDraft(), 23);
   } finally {
     if (previousDraft === undefined) delete process.env.MOQT_DRAFT;
     else process.env.MOQT_DRAFT = previousDraft;

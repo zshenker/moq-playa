@@ -3,7 +3,7 @@
  *
  * Acceptance behavior deliberately MIRRORS the shared factory in
  * packages/browser/src/webtransport-factory.ts — same cert-hash pinning,
- * same WT-Available-Protocols offer (`moqt-<v>` for v ≥ 15, `moqt-16` by
+ * same WT-Available-Protocols offer (`moqt-<v>` for v ≥ 15, `moqt-23` by
  * default, none for draft 14), same strict-UA retry without protocols for
  * drafts 16 and 18 only — so
  * probes and real connections apply the same compatibility rules.
@@ -17,7 +17,7 @@
  */
 
 /** The factory's default draft, offered when the probe names none. */
-const DEFAULT_DRAFT_VERSION = 16;
+const DEFAULT_DRAFT_VERSION = 23;
 
 /** Options for one probe. */
 export interface ProbeOptions {

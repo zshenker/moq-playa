@@ -1336,7 +1336,7 @@ export class MoqtConnection {
    *   - Browser WebTransport may expose `transport.protocol`, allowing
    *     draft auto-detection ('moqt-16' → 16, 'moq-00' → 14).
    *   - Node/headless/polyfill WebTransport often has `protocol` undefined.
-   *   - When `protocol` is undefined, the connection defaults to draft 16
+   *   - When `protocol` is undefined, the connection defaults to draft 23
    *     (`DEFAULT_DRAFT_VERSION`).
    *   - **v14 callers MUST pass `new MoqtConnection(14)`**, because the first
    *     CLIENT_SETUP bytes are draft-specific and cannot be retried.
@@ -1359,7 +1359,7 @@ export class MoqtConnection {
     this.joiningFetchTimeoutMs = options?.joiningFetchTimeoutMs ?? 10_000;
     this.terminatedAliasTtlMs = options?.terminatedAliasTtlMs ?? 10_000;
     this.closeReportFallbackMs = options?.closeReportFallbackMs ?? 2_000;
-    // Initialize with the requested version (or the default, 16). May be reconfigured
+    // Initialize with the requested version (or the default, 23). May be reconfigured
     // in connect() if WT protocol negotiation selects a different draft.
     this.configureForVersion(version ?? DEFAULT_DRAFT_VERSION);
   }

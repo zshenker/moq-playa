@@ -111,7 +111,7 @@ export interface DataCodec {
 
 /**
  * Create a {@link DataCodec} for the given draft version.
- * @param version Draft version (default: {@link DEFAULT_DRAFT_VERSION}).
+ * @param version Draft version (default: {@link DEFAULT_DRAFT_VERSION}, 23).
  *   Drafts 14, 16, 18, 22 and 23 are wired.
  * @throws {Error} for draft versions without a wired data codec.
  */

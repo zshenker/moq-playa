@@ -123,7 +123,7 @@ class FakeSession implements NativeQuicSession {
     opened?: Promise<NativeQuicOpenedInfo>,
   ) {
     this.opened = opened ?? Promise.resolve({
-      protocol: 'moqt-18',
+      protocol: 'moqt-23',
       earlyDataAttempted: false,
       earlyDataAccepted: false,
       ...info,
@@ -261,7 +261,7 @@ describe('connectQuicWithRuntime', () => {
     expect(failed.destroyCalls).toHaveLength(1);
   });
 
-  it('offers only moqt-18, advertises datagrams, disables 0-RTT, and captures early ingress', async () => {
+  it('offers only moqt-23 by default, advertises datagrams, disables 0-RTT, and captures early ingress', async () => {
     const session = new FakeSession();
     const fake = fakeRuntime(session);
     const connecting = connectQuicWithRuntime('moqt://relay.example:4443/moq', {}, fake.runtime);
@@ -276,7 +276,7 @@ describe('connectQuicWithRuntime', () => {
     const transport = await connecting;
     expect(fake.address()).toBe('relay.example:4443');
     expect(fake.options()).toMatchObject({
-      alpn: 'moqt-18',
+      alpn: 'moqt-23',
       enableEarlyData: false,
       rejectUnauthorized: true,
       verifyPeer: 'strict',
@@ -286,7 +286,7 @@ describe('connectQuicWithRuntime', () => {
     });
     expect(transport).toMatchObject({
       kind: 'quic',
-      protocol: 'moqt-18',
+      protocol: 'moqt-23',
       maxDatagramSize: 1180,
       setupOptions: { authority: 'relay.example:4443', path: '/moq' },
     });

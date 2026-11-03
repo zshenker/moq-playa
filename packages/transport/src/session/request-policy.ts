@@ -49,7 +49,7 @@ const STREAM_LIMITED: RequestPolicy = {
 
 /**
  * Resolve the {@link RequestPolicy} for a draft version.
- * @param version Draft version (default: {@link DEFAULT_DRAFT_VERSION}).
+ * @param version Draft version (default: {@link DEFAULT_DRAFT_VERSION}, 23).
  */
 export function getRequestPolicy(version: DraftVersion = DEFAULT_DRAFT_VERSION): RequestPolicy {
   return isRequestStreamDraft(version) ? STREAM_LIMITED : CREDITED;

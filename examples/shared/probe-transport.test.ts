@@ -31,7 +31,10 @@ function installStub(): void {
   vi.stubGlobal('WebTransport', class {
     ready: Promise<void>;
     closed: { catch: (fn: unknown) => Promise<void> };
+    protocol: string;
     constructor(url: string, options: any = {}) {
+      // A server that selects the first protocol offered.
+      this.protocol = options?.protocols?.[0] ?? '';
       let resolveReady!: () => void;
       let rejectReady!: (err?: unknown) => void;
       this.ready = new Promise<void>((res, rej) => { resolveReady = res; rejectReady = rej; });
@@ -102,9 +105,9 @@ describe('probeTransport option building', () => {
     expect(constructed[1]!.options.protocols).toEqual(['moqt-16']);
   });
 
-  it('offers moqt-16 when no draft version is specified (factory default)', async () => {
+  it('offers moqt-23 when no draft version is specified (factory default)', async () => {
     await probeTransport('https://r:4433/moq');
-    expect(constructed[0]!.options.protocols).toEqual(['moqt-16']);
+    expect(constructed[0]!.options.protocols).toEqual(['moqt-23']);
   });
 
   it('offers no protocols for draft 14 (h3 ALPN fallback)', async () => {
@@ -158,7 +161,7 @@ describe('probeTransport protocol fallback', () => {
   it('keeps the cert hash on the fallback attempt', async () => {
     rejectWithProtocols = true;
     const hash = new Uint8Array([0x01]).buffer;
-    await probeTransport('https://r:4433/moq', { certHash: hash });
+    await probeTransport('https://r:4433/moq', { certHash: hash, draftVersion: 16 });
     expect(constructed[1]!.options.serverCertificateHashes).toEqual([
       { algorithm: 'sha-256', value: hash },
     ]);
@@ -166,7 +169,7 @@ describe('probeTransport protocol fallback', () => {
 
   it('rejects naming both failures when offered and fallback attempts both fail', async () => {
     rejectAlways = true;
-    await expect(probeTransport('https://r:4433/moq')).rejects.toThrow(/retry without protocols also failed/);
+    await expect(probeTransport('https://r:4433/moq', { draftVersion: 16 })).rejects.toThrow(/retry without protocols also failed/);
     expect(constructed).toHaveLength(2);
   });
 
@@ -224,7 +227,7 @@ describe('probeTransport cancellation', () => {
     autoResolve = false; // fallback attempt hangs
     const controller = new AbortController();
     const reason = new Error('probe cancelled');
-    const probe = probeTransport('https://r:4433/moq', { signal: controller.signal });
+    const probe = probeTransport('https://r:4433/moq', { signal: controller.signal, draftVersion: 16 });
     const pending = expect(probe).rejects.toBe(reason);
     // Let the first (offered) attempt fail and the fallback start.
     await vi.waitFor(() => expect(constructed).toHaveLength(2));
@@ -264,7 +267,7 @@ describe('probeTransport listener hygiene', () => {
     const controller = new AbortController();
     const adds = vi.spyOn(controller.signal, 'addEventListener');
     const removes = vi.spyOn(controller.signal, 'removeEventListener');
-    await probeTransport('https://r:4433/moq', { signal: controller.signal });
+    await probeTransport('https://r:4433/moq', { signal: controller.signal, draftVersion: 16 });
     const abortAdds = adds.mock.calls.filter(([type]) => type === 'abort').length;
     const abortRemoves = removes.mock.calls.filter(([type]) => type === 'abort').length;
     expect(abortRemoves).toBe(abortAdds);

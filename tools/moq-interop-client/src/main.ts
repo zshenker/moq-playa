@@ -54,7 +54,7 @@ export function __setBoundScale(v: number) { BOUND_SCALE = v; }
 const SUPPORTED_DRAFTS = [18, 16, 22, 23] as const;
 export function selectDraft(): number {
   const raw = (process.env.MOQT_DRAFT ?? "").trim();
-  if (raw === "") return 18;
+  if (raw === "") return 23;
   const n = Number(raw.replace(/^draft-/, ""));
   if (!Number.isInteger(n) || !SUPPORTED_DRAFTS.includes(n as any)) {
     throw new Error(`unsupported MOQT_DRAFT '${raw}' (supported: ${SUPPORTED_DRAFTS.join(", ")})`);

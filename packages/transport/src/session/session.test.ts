@@ -22,7 +22,7 @@ describe('Session', () => {
     let session: Session;
 
     beforeEach(() => {
-      session = new Session(EndpointRole.CLIENT);
+      session = new Session(EndpointRole.CLIENT, 16);
     });
 
     it('starts in IDLE state', () => {
@@ -104,7 +104,7 @@ describe('Session', () => {
     let session: Session;
 
     beforeEach(() => {
-      session = new Session(EndpointRole.SERVER);
+      session = new Session(EndpointRole.SERVER, 16);
     });
 
     it('starts in IDLE state', () => {
@@ -201,7 +201,7 @@ describe('Session', () => {
     let session: Session;
 
     beforeEach(() => {
-      session = new Session(EndpointRole.CLIENT);
+      session = new Session(EndpointRole.CLIENT, 16);
       session.initiateSetup({ maxRequestId: varint(100n) });
 
       const serverSetup: ServerSetup = {
@@ -644,7 +644,7 @@ describe('Session', () => {
     let session: Session;
 
     beforeEach(() => {
-      session = new Session(EndpointRole.CLIENT);
+      session = new Session(EndpointRole.CLIENT, 16);
       session.initiateSetup({ maxRequestId: varint(100n) });
 
       const serverSetup: ServerSetup = {
@@ -883,7 +883,7 @@ describe('Session', () => {
     let session: Session;
 
     beforeEach(() => {
-      session = new Session(EndpointRole.CLIENT);
+      session = new Session(EndpointRole.CLIENT, 16);
       session.initiateSetup({ maxRequestId: varint(100n) });
 
       const serverSetup: ServerSetup = {
@@ -975,7 +975,7 @@ describe('Session', () => {
     let session: Session;
 
     beforeEach(() => {
-      session = new Session(EndpointRole.CLIENT);
+      session = new Session(EndpointRole.CLIENT, 16);
       session.initiateSetup();
       session.handleControlMessage({
         type: 'SERVER_SETUP',
@@ -1030,7 +1030,7 @@ describe('Session', () => {
 
   describe('request ID management', () => {
     it('client allocates even request IDs', () => {
-      const session = new Session(EndpointRole.CLIENT);
+      const session = new Session(EndpointRole.CLIENT, 16);
       session.initiateSetup();
       session.handleControlMessage({
         type: 'SERVER_SETUP',
@@ -1049,7 +1049,7 @@ describe('Session', () => {
     });
 
     it('server allocates odd request IDs', () => {
-      const session = new Session(EndpointRole.SERVER);
+      const session = new Session(EndpointRole.SERVER, 16);
       session.handleControlMessage({
         type: 'CLIENT_SETUP',
         parameters: new Map([[varint(SetupParam.MAX_REQUEST_ID), [varint(100n)]]]),
@@ -1062,7 +1062,7 @@ describe('Session', () => {
     });
 
     it('throws when request IDs exhausted', () => {
-      const session = new Session(EndpointRole.CLIENT);
+      const session = new Session(EndpointRole.CLIENT, 16);
       session.initiateSetup();
       session.handleControlMessage({
         type: 'SERVER_SETUP',
@@ -1080,7 +1080,7 @@ describe('Session', () => {
 
   describe('close', () => {
     it('transitions to CLOSED state', () => {
-      const session = new Session(EndpointRole.CLIENT);
+      const session = new Session(EndpointRole.CLIENT, 16);
       session.initiateSetup();
       session.handleControlMessage({
         type: 'SERVER_SETUP',
@@ -1095,7 +1095,7 @@ describe('Session', () => {
     });
 
     it('uses correct field names for close action', () => {
-      const session = new Session(EndpointRole.CLIENT);
+      const session = new Session(EndpointRole.CLIENT, 16);
       session.initiateSetup();
       session.handleControlMessage({
         type: 'SERVER_SETUP',
@@ -1110,7 +1110,7 @@ describe('Session', () => {
     });
 
     it('prevents operations after close', () => {
-      const session = new Session(EndpointRole.CLIENT);
+      const session = new Session(EndpointRole.CLIENT, 16);
       session.initiateSetup();
       session.handleControlMessage({
         type: 'SERVER_SETUP',
@@ -1128,7 +1128,7 @@ describe('Session', () => {
     let session: Session;
 
     beforeEach(() => {
-      session = new Session(EndpointRole.CLIENT);
+      session = new Session(EndpointRole.CLIENT, 16);
       session.initiateSetup();
       session.handleControlMessage({
         type: 'SERVER_SETUP',
@@ -1161,7 +1161,7 @@ describe('Session', () => {
 
     it('server closes with PROTOCOL_VIOLATION when receiving GOAWAY with non-empty URI', () => {
       // Create a server session
-      const serverSession = new Session(EndpointRole.SERVER);
+      const serverSession = new Session(EndpointRole.SERVER, 16);
 
       // Establish the session
       const clientParams: Parameters = new Map();
@@ -1193,7 +1193,7 @@ describe('Session', () => {
 
     it('server accepts GOAWAY with empty URI', () => {
       // Create a server session
-      const serverSession = new Session(EndpointRole.SERVER);
+      const serverSession = new Session(EndpointRole.SERVER, 16);
 
       // Establish the session
       const clientParams: Parameters = new Map();
@@ -1280,7 +1280,7 @@ describe('Session', () => {
     let session: Session;
 
     beforeEach(() => {
-      session = new Session(EndpointRole.CLIENT);
+      session = new Session(EndpointRole.CLIENT, 16);
       session.initiateSetup();
       session.handleControlMessage({
         type: 'SERVER_SETUP',
@@ -1325,7 +1325,7 @@ describe('Session', () => {
     let session: Session;
 
     beforeEach(() => {
-      session = new Session(EndpointRole.CLIENT);
+      session = new Session(EndpointRole.CLIENT, 16);
       session.initiateSetup();
       session.handleControlMessage({
         type: 'SERVER_SETUP',
@@ -1360,7 +1360,7 @@ describe('Session', () => {
 
   describe('REQUESTS_BLOCKED handling (§9.6)', () => {
     it('acknowledges REQUESTS_BLOCKED without error', () => {
-      const session = new Session(EndpointRole.CLIENT);
+      const session = new Session(EndpointRole.CLIENT, 16);
       session.initiateSetup();
       session.handleControlMessage({
         type: 'SERVER_SETUP',
@@ -1382,7 +1382,7 @@ describe('Session', () => {
     let session: Session;
 
     beforeEach(() => {
-      session = new Session(EndpointRole.CLIENT);
+      session = new Session(EndpointRole.CLIENT, 16);
       session.initiateSetup();
       session.handleControlMessage({
         type: 'SERVER_SETUP',
@@ -1466,7 +1466,7 @@ describe('Session', () => {
     let session: Session;
 
     beforeEach(() => {
-      session = new Session(EndpointRole.CLIENT);
+      session = new Session(EndpointRole.CLIENT, 16);
       session.initiateSetup({ maxRequestId: varint(100n) });
       session.handleControlMessage({
         type: 'SERVER_SETUP',
@@ -2181,7 +2181,7 @@ describe('Session', () => {
     let session: Session;
 
     beforeEach(() => {
-      session = new Session(EndpointRole.CLIENT);
+      session = new Session(EndpointRole.CLIENT, 16);
       session.initiateSetup({ maxRequestId: varint(100n) });
       session.handleControlMessage({
         type: 'SERVER_SETUP',
@@ -2438,7 +2438,7 @@ describe('Session', () => {
     let session: Session;
 
     beforeEach(() => {
-      session = new Session(EndpointRole.CLIENT);
+      session = new Session(EndpointRole.CLIENT, 16);
       session.initiateSetup({ maxRequestId: varint(100n) });
       session.handleControlMessage({
         type: 'SERVER_SETUP',
@@ -2790,7 +2790,7 @@ describe('Session', () => {
 
     /** Helper: create established server session that accepts incoming requests. */
     beforeEach(() => {
-      session = new Session(EndpointRole.SERVER);
+      session = new Session(EndpointRole.SERVER, 16);
       session.handleControlMessage({
         type: 'CLIENT_SETUP',
         parameters: new Map([[varint(SetupParam.MAX_REQUEST_ID), [varint(100n)]]]),
@@ -2868,7 +2868,7 @@ describe('Session', () => {
 
       it('rejects request ID exceeding our MAX_REQUEST_ID', () => {
         // Server with low MAX_REQUEST_ID
-        const s = new Session(EndpointRole.SERVER);
+        const s = new Session(EndpointRole.SERVER, 16);
         s.handleControlMessage({
           type: 'CLIENT_SETUP',
           parameters: new Map([[varint(SetupParam.MAX_REQUEST_ID), [varint(100n)]]]),
@@ -3382,8 +3382,8 @@ describe('Session', () => {
 
     /** Helper: complete setup handshake between client and server. */
     beforeEach(() => {
-      client = new Session(EndpointRole.CLIENT);
-      server = new Session(EndpointRole.SERVER);
+      client = new Session(EndpointRole.CLIENT, 16);
+      server = new Session(EndpointRole.SERVER, 16);
 
       // Client → Server: CLIENT_SETUP
       const clientActions = client.initiateSetup({ maxRequestId: varint(100n) });
@@ -3771,7 +3771,7 @@ describe('Session', () => {
      * Draft-16 §9.2.2.1 allows AUTHORIZATION_TOKEN on PUBLISH, but not on PUBLISH_OK.
      * The session must not blindly replay inbound PUBLISH parameters into the response.
      */
-    const session = new Session(EndpointRole.CLIENT);
+    const session = new Session(EndpointRole.CLIENT, 16);
     session.initiateSetup({ maxRequestId: varint(100n) });
     session.handleControlMessage({
       type: 'SERVER_SETUP',
@@ -4681,7 +4681,7 @@ describe('Session', () => {
 
     describe('constructor + draftVersion', () => {
       it('defaults to draft 16', () => {
-        const s = new Session(EndpointRole.CLIENT);
+        const s = new Session(EndpointRole.CLIENT, 16);
         expect(s.draftVersion).toBe(16);
       });
 
@@ -5845,7 +5845,7 @@ describe('Session', () => {
     let session: Session;
 
     beforeEach(() => {
-      session = new Session(EndpointRole.CLIENT);
+      session = new Session(EndpointRole.CLIENT, 16);
       session.initiateSetup({ maxRequestId: varint(100n) });
       const serverParams: Parameters = new Map();
       serverParams.set(varint(SetupParam.MAX_REQUEST_ID), [varint(200n)]);
@@ -5900,7 +5900,7 @@ describe('Session', () => {
     });
 
     it('throws on IDLE session (not yet established)', () => {
-      const freshSession = new Session(EndpointRole.CLIENT);
+      const freshSession = new Session(EndpointRole.CLIENT, 16);
       expect(() => freshSession.publishNamespaceDone(varint(0n))).toThrow();
     });
 
@@ -6432,7 +6432,7 @@ describe('draft-18 message-parameter scope validation (§10.2.1)', () => {
 
   // ── Legacy guard: draft-16 still IGNORES an out-of-scope known param ──
   it('draft-16 ignores an out-of-scope known param (SUBSCRIBER_PRIORITY on SUBSCRIBE_OK) — no violation', () => {
-    const s16 = new Session(EndpointRole.CLIENT);
+    const s16 = new Session(EndpointRole.CLIENT, 16);
     s16.initiateSetup({ maxRequestId: varint(100n) });
     s16.handleControlMessage({
       type: 'SERVER_SETUP', parameters: new Map([[varint(SetupParam.MAX_REQUEST_ID), [varint(100n)]]]),
@@ -6458,7 +6458,7 @@ describe('draft-18 SUBSCRIPTION_FILTER wire correctness (§5.1.2)', () => {
     return s;
   }
   function client16(): Session {
-    const s = new Session(EndpointRole.CLIENT);
+    const s = new Session(EndpointRole.CLIENT, 16);
     s.initiateSetup({ maxRequestId: varint(100n) });
     s.handleControlMessage({ type: 'SERVER_SETUP', parameters: new Map([[varint(SetupParam.MAX_REQUEST_ID), [varint(100n)]]]) });
     return s;
@@ -6561,7 +6561,7 @@ describe('draft-18 Track Namespace rules — empty namespace + reserved .session
     return s;
   }
   function client16(): Session {
-    const s = new Session(EndpointRole.CLIENT);
+    const s = new Session(EndpointRole.CLIENT, 16);
     s.initiateSetup({ maxRequestId: varint(100n) });
     s.handleControlMessage({ type: 'SERVER_SETUP', parameters: new Map([[varint(SetupParam.MAX_REQUEST_ID), [varint(100n)]]]) });
     return s;
@@ -6759,7 +6759,7 @@ describe('draft-18 OBJECT/SUBGROUP_DELIVERY_TIMEOUT = 0 (§10.2.4/§10.2.3)', ()
     expect(noClose(a)).toBe(true);
   });
   it('draft-16 still rejects DELIVERY_TIMEOUT (0x02) = 0 with PROTOCOL_VIOLATION (legacy guard)', () => {
-    const s16 = new Session(EndpointRole.CLIENT);
+    const s16 = new Session(EndpointRole.CLIENT, 16);
     s16.initiateSetup({ maxRequestId: varint(100n) });
     s16.handleControlMessage({ type: 'SERVER_SETUP', parameters: new Map([[varint(SetupParam.MAX_REQUEST_ID), [varint(100n)]]]) });
     const a = s16.handleControlMessage({

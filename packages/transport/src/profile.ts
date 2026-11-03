@@ -103,7 +103,7 @@ function getCapabilities(version: DraftVersion): ProfileCapabilities {
 
 /**
  * Resolve the {@link ProtocolProfile} for a draft version.
- * @param version Draft version (default: {@link DEFAULT_DRAFT_VERSION}). Drafts 14, 16, 18, 22 and 23 are wired.
+ * @param version Draft version (default: {@link DEFAULT_DRAFT_VERSION}, 23). Drafts 14, 16, 18, 22 and 23 are wired.
  */
 export function getProtocolProfile(version: DraftVersion = DEFAULT_DRAFT_VERSION): ProtocolProfile {
   return {

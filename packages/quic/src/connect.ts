@@ -24,7 +24,7 @@ export interface QuicConnectOptions {
   readonly handshakeTimeoutMs?: number;
   /** Maximum QUIC DATAGRAM frame size advertised to the peer. */
   readonly maxDatagramFrameSize?: number;
-  /** MOQT draft to offer: ALPN `moqt-18` (default), `moqt-22` or `moqt-23`. */
+  /** MOQT draft to offer: ALPN `moqt-23` (default), `moqt-22` or `moqt-18`. */
   readonly draft?: 18 | 22 | 23;
 }
 
@@ -191,7 +191,7 @@ export async function connectQuicWithRuntime(
   runtime: NativeQuicRuntime,
 ): Promise<MoqtQuicTransport> {
   const parsed = parseMoqtUri(uri);
-  const draft = options.draft ?? 18;
+  const draft = options.draft ?? 23;
   if (draft !== 18 && draft !== 22 && draft !== 23) {
     throw new RangeError(`native QUIC supports drafts 18, 22 and 23, not ${String(draft)}`);
   }
