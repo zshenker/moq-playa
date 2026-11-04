@@ -24102,7 +24102,7 @@ var PlayaPlayer = (() => {
   };
 
   // ../player/dist/group-boundary-order.js
-  var GROUP_BOUNDARY_WAIT_MS = 250;
+  var GROUP_BOUNDARY_WAIT_MS = 2e3;
   var GroupBoundaryOrder = class {
     deliver;
     waitMs;
@@ -24110,6 +24110,15 @@ var PlayaPlayer = (() => {
     groupEnded = false;
     /** The track has delivered END_OF_GROUP, so a tail is worth waiting for. */
     signalsEnd = false;
+    /**
+     * Assume group IDs advance by one, as live publishers number them, so after
+     * a group ends a later group's head means the group in between is still in
+     * flight. Assumed from the start because the first boundary is where a stall
+     * at startup strands a group. Cleared the first time an expected group never
+     * arrives, so a track that skips IDs waits out one deadline and is then
+     * never held for a missing group again.
+     */
+    consecutive = true;
     held = [];
     timer = null;
     constructor(deliver, waitMs = GROUP_BOUNDARY_WAIT_MS) {
@@ -24122,36 +24131,66 @@ var PlayaPlayer = (() => {
         this.release(obj);
         return;
       }
-      if (this.groupEnded || !this.signalsEnd) {
+      const nextExpected = this.consecutive && group > this.group + 1n;
+      if (!this.signalsEnd || this.groupEnded && !nextExpected) {
         this.release(obj);
         return;
       }
       this.held.push(obj);
-      if (this.timer === null) {
-        this.timer = setTimeout(() => {
-          this.timer = null;
-          this.flush();
-        }, this.waitMs);
-      }
+      if (this.timer === null)
+        this.armDeadline();
     }
-    /** Release everything held, in (group, object) order. */
+    /**
+     * Release the next held group, in object order. Later groups stay held
+     * behind it until it ends in turn: after a stall several groups can be
+     * queued, and releasing them all at once would make the newest one current
+     * while the next is still missing its tail.
+     */
     flush() {
+      this.releaseNextHeld(false);
+    }
+    releaseNextHeld(deadline) {
       if (this.timer !== null) {
         clearTimeout(this.timer);
         this.timer = null;
       }
-      const held = this.held.sort((a, b) => {
-        const ga = BigInt(a.groupId);
-        const gb = BigInt(b.groupId);
-        if (ga !== gb)
-          return ga < gb ? -1 : 1;
+      if (this.held.length === 0)
+        return;
+      const next = this.held.reduce((min, o) => BigInt(o.groupId) < min ? BigInt(o.groupId) : min, BigInt(this.held[0].groupId));
+      const now = this.held.filter((o) => BigInt(o.groupId) === next).sort((a, b) => {
         const oa = BigInt(a.objectId);
         const ob = BigInt(b.objectId);
         return oa < ob ? -1 : oa > ob ? 1 : 0;
       });
-      this.held = [];
-      for (const obj of held)
+      const skips = this.groupEnded && this.group !== null && next > this.group + 1n;
+      if (skips && this.consecutive && !deadline) {
+        this.armDeadline();
+        return;
+      }
+      this.held = this.held.filter((o) => BigInt(o.groupId) !== next);
+      if (skips && deadline)
+        this.consecutive = false;
+      for (const obj of now)
         this.release(obj);
+      if (this.held.length > 0 && this.timer === null)
+        this.armDeadline();
+    }
+    armDeadline() {
+      this.timer = setTimeout(() => {
+        this.timer = null;
+        this.releaseNextHeld(true);
+      }, this.waitMs);
+    }
+    /**
+     * Group `groupId`'s tail is lost (its stream reset): stop waiting for it and
+     * release later groups now. No-op unless `groupId` is the open group.
+     */
+    abandon(groupId) {
+      if (this.group !== groupId || this.groupEnded)
+        return;
+      this.groupEnded = true;
+      if (this.held.length > 0)
+        this.flush();
     }
     /** Drop held objects and the pending deadline (track retired or player reset). */
     dispose() {
@@ -24167,6 +24206,8 @@ var PlayaPlayer = (() => {
         this.group = group;
         this.groupEnded = false;
       }
+      if (obj.subgroupContainsEndOfGroup === true)
+        this.signalsEnd = true;
       const endsGroup = obj.kind === "gap" && obj.status === ObjectStatus.END_OF_GROUP;
       if (endsGroup && group === this.group) {
         this.groupEnded = true;
@@ -28957,6 +28998,13 @@ var PlayaPlayer = (() => {
       return this.tracks.get(trackAlias)?.mediaType;
     }
     /**
+     * Get the track name for a track alias.
+     * Returns undefined if the alias is not registered.
+     */
+    getTrackName(trackAlias) {
+      return this.tracks.get(trackAlias)?.trackName;
+    }
+    /**
      * Route a MoqtObject to the correct pipeline.
      *
      * 1. Look up the track alias
@@ -30777,6 +30825,8 @@ var PlayaPlayer = (() => {
     cmafSwitchContexts = /* @__PURE__ */ new Map();
     /** Per video track: orders objects across group boundaries on the MSE paths. */
     videoGroupOrders = /* @__PURE__ */ new Map();
+    /** Per track: the last CMAF group reported dropped below the committed floor. */
+    cmafStaleDropLogged = /* @__PURE__ */ new Map();
     /** Timeout for keyframe arrival during make-before-break switch. */
     switchStagingTimeout = null;
     /**
@@ -32395,8 +32445,13 @@ var PlayaPlayer = (() => {
         const groupId = BigInt(obj.groupId);
         if (this.mediaSource && "getCommittedGroupFloor" in this.mediaSource) {
           const floor = this.mediaSource.getCommittedGroupFloor(mediaType, trackName);
-          if (floor !== void 0 && groupId < floor)
+          if (floor !== void 0 && groupId < floor) {
+            if (this.cmafStaleDropLogged.get(trackName) !== groupId) {
+              this.cmafStaleDropLogged.set(trackName, groupId);
+              this.log.debug('[CMAF] dropping late %s group %s on "%s": below committed group %s', mediaType, String(groupId), trackName, String(floor));
+            }
             return;
+          }
         }
         this.cmafAssembler?.push(mediaType, trackName, groupId, obj.payload);
       };
@@ -35497,6 +35552,9 @@ var PlayaPlayer = (() => {
                 terminal: "reset",
                 reset_code: `0x${error.toString(16)}`
               });
+              if (lifecycle.endOfGroup && lifecycle.trackName !== void 0) {
+                this.videoGroupOrders.get(lifecycle.trackName)?.abandon(lifecycle.groupId);
+              }
             }
           }
         }, "data"),
@@ -35522,6 +35580,7 @@ var PlayaPlayer = (() => {
             subgroupLifecycle.set(streamId, {
               groupId: sub.groupId,
               endOfGroup: sub.isEndOfGroup,
+              trackName: this.subscriptionManager?.getTrackName(alias),
               subgroupId: mode === SubgroupIdMode.FIRST_OBJECT ? void 0 : sub.subgroupId
             });
             return;
@@ -40595,6 +40654,7 @@ var PlayaPlayer = (() => {
         const key = `${mediaType}:${trackName}`;
         const floor = this.committedGroupFloor.get(key);
         if (floor !== void 0 && groupId < floor) {
+          this.logStaleGroupDrop(mediaType, trackName, groupId, floor);
           return;
         }
       }
@@ -40764,6 +40824,19 @@ var PlayaPlayer = (() => {
     getCommittedGroupFloor(mediaType, trackName) {
       return this.committedGroupFloor.get(`${mediaType}:${trackName}`);
     }
+    /** Last group reported by {@link logStaleGroupDrop}, per track: one line per dropped group. */
+    staleDropLogged = /* @__PURE__ */ new Map();
+    /**
+     * Note media dropped for arriving below the committed group floor. Such a
+     * drop leaves a hole, so it is worth a line, but only one per group.
+     */
+    logStaleGroupDrop(mediaType, trackName, groupId, floor) {
+      const key = `${mediaType}:${trackName}`;
+      if (this.staleDropLogged.get(key) === groupId)
+        return;
+      this.staleDropLogged.set(key, groupId);
+      this.logDebug('[MSE] dropping late %s group %s on "%s": below committed group %s', mediaType, String(groupId), trackName, String(floor));
+    }
     /**
      * Clear a specific track's timeline index.
      * Called on decode-time discontinuity so old ranges don't cause
@@ -40809,6 +40882,7 @@ var PlayaPlayer = (() => {
       this.videoTimelines.clear();
       this.audioTimelines.clear();
       this.committedGroupFloor.clear();
+      this.staleDropLogged.clear();
       this.pendingVideoRanges = [];
       this.pendingAudioRanges = [];
       this.pendingVideoTrackName = null;
@@ -41034,6 +41108,7 @@ var PlayaPlayer = (() => {
           const floorKey = `${mediaType}:${peek.trackName}`;
           const floor = this.committedGroupFloor.get(floorKey);
           if (floor !== void 0 && peek.groupId < floor) {
+            this.logStaleGroupDrop(mediaType, peek.trackName, peek.groupId, floor);
             queue.shift();
             continue;
           }
@@ -41492,9 +41567,84 @@ var PlayaPlayer = (() => {
         return;
       this.wedgeTimer = setInterval(() => {
         const nowMs = performance.now();
+        this.checkVideoHole();
         this.checkGapJump(nowMs);
         this.checkPlayheadWedge(nowMs);
       }, _MseMediaSource.WEDGE_CHECK_INTERVAL_MS);
+    }
+    // ─── Video-only hole ─────────────────────────────────────────────
+    /** Playhead at the previous video-hole check, to see a hole crossed between ticks. */
+    videoHoleLastTime = null;
+    /**
+     * Recover from a hole in the VIDEO SourceBuffer that audio plays across.
+     *
+     * With audio buffered through it, the element does not stop at a video-only
+     * hole: the clock keeps running on audio while the picture freezes, and the
+     * video decoder, still waiting for frames at the hole, can wedge playback
+     * for good a little later with media buffered ahead. The buffered-hole gap
+     * jump cannot see this: it watches the element's combined ranges for a
+     * playhead frozen at a hole, and here the playhead keeps moving.
+     *
+     * Inside a hole within the gap jump's bound, seek to the next video range
+     * (as a gap jump would). Once the playhead passes a hole's end, of any size,
+     * seek to the current position, which restarts video decoding from that
+     * range's keyframe and keeps audio continuous. There is no wait: the picture is already frozen, and media
+     * for the hole will not be appended once a later group is committed.
+     */
+    checkVideoHole() {
+      const v = this.video;
+      const last = this.videoHoleLastTime;
+      this.videoHoleLastTime = null;
+      if (this.destroyed || !this.playTriggered || this.gapJumpMs <= 0)
+        return;
+      if (v.paused || v.seeking || v.error !== null || !this.playbackIntent)
+        return;
+      const video = this.videoBuffer;
+      const audio = this.audioBuffer;
+      if (video === null || audio === null)
+        return;
+      let vr;
+      let ar;
+      try {
+        vr = video.buffered;
+        ar = audio.buffered;
+      } catch {
+        return;
+      }
+      const ct = v.currentTime;
+      this.videoHoleLastTime = ct;
+      const tol = _MseMediaSource.GAP_IDENTITY_TOLERANCE_SEC;
+      let audioCovers = false;
+      for (let i = 0; i < ar.length; i++) {
+        if (ct >= ar.start(i) && ct <= ar.end(i)) {
+          audioCovers = true;
+          break;
+        }
+      }
+      if (!audioCovers)
+        return;
+      for (let i = 0; i + 1 < vr.length; i++) {
+        const holeStart = vr.end(i);
+        const holeEnd = vr.start(i + 1);
+        const holeSec = holeEnd - holeStart;
+        if (holeSec <= tol)
+          continue;
+        const inside = ct > holeStart + tol && ct < holeEnd && holeSec <= _MseMediaSource.GAP_JUMP_MAX_HOLE_SEC + 1e-9;
+        const crossed = !inside && last !== null && last < holeEnd && ct >= holeEnd && ct <= vr.end(i + 1);
+        if (!inside && !crossed)
+          continue;
+        const to = inside ? holeEnd + Math.min(0.01, (vr.end(i + 1) - holeEnd) / 2) : ct;
+        this.videoHoleLastTime = null;
+        v.currentTime = to;
+        this.noteSelfSeek();
+        const info = { from: ct, to, holeSec, waitedMs: 0, bufferedRanges: fmtRanges(v.buffered) };
+        try {
+          this.onGapJump?.(info);
+        } catch {
+        }
+        this.logWarn(`[MSE] video-only hole ${holeStart.toFixed(2)}s-${holeEnd.toFixed(2)}s ${inside ? "reached" : "crossed"} at ${ct.toFixed(2)}s with audio playing \u2014 seeking to ${to.toFixed(2)}s`);
+        return;
+      }
     }
     // ─── Buffered-hole gap-jump ──────────────────────────────────────
     /** Drop the armed hole candidate (wait restarts on the next sighting). */
