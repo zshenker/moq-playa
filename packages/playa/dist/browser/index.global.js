@@ -14805,7 +14805,10 @@ var PlayaPlayer = (() => {
      * aggregate incoming-uni source so standalone callers release its reader lock.
      * When the same operation closes the transport, pass `transportClosing`; the
      * backend then remains the sole owner of that aggregate source's terminal
-     * transition. Fire-and-forget teardown (idempotent; safe if already torn down).
+     * transition. For a clean close (`graceful`) the control streams are released
+     * rather than reset too, so the peer sees only the session close; an error
+     * close still resets them, retiring any write in flight. Fire-and-forget
+     * teardown (idempotent; safe if already torn down).
      */
     shutdown(options = {}) {
       const reason = new Error("session terminated");
@@ -14816,12 +14819,16 @@ var PlayaPlayer = (() => {
       else
         router?.abort(reason);
       this.controlEpoch++;
+      const release = options.transportClosing === true && options.graceful === true;
       const controlReader = this.controlReader;
       this.controlReader = null;
       if (controlReader) {
         try {
-          void controlReader.cancel(reason).catch(() => {
-          });
+          if (release)
+            controlReader.releaseLock();
+          else
+            void controlReader.cancel(reason).catch(() => {
+            });
         } catch {
         }
       }
@@ -14829,8 +14836,11 @@ var PlayaPlayer = (() => {
       this.controlWriter = null;
       if (controlWriter) {
         try {
-          void controlWriter.abort(reason).catch(() => {
-          });
+          if (release)
+            controlWriter.releaseLock();
+          else
+            void controlWriter.abort(reason).catch(() => {
+            });
         } catch {
         }
       }
@@ -15892,7 +15902,11 @@ var PlayaPlayer = (() => {
      * readers and writers, and the topology's request-stream contexts. Nothing
      * owned by the connection outlives the terminal shutdown.
      */
-    clearTerminalState() {
+    /**
+     * @param graceful A clean local close: the topology releases the control
+     *   streams instead of resetting them, so the peer sees only the session close.
+     */
+    clearTerminalState(graceful = false) {
       this.authorization?.close();
       this.authorizationUpdateTails.clear();
       const incomingUniRouter = this.incomingUniRouter;
@@ -15964,7 +15978,7 @@ var PlayaPlayer = (() => {
       for (const w of this.namespaceStreams.values())
         this.swallow(() => w.abort(reason));
       this.namespaceStreams.clear();
-      this.uniPair?.shutdown({ transportClosing: true });
+      this.uniPair?.shutdown({ transportClosing: true, graceful });
     }
     /**
      * Await every promise in `ops`, but never longer than `ms`. Returns true only
@@ -18393,7 +18407,7 @@ var PlayaPlayer = (() => {
       const actions = this.session.close(error, reason);
       this.failPendingRawSubscriptions(reason ?? "Session closed");
       const transportClose = this.executeActions(actions);
-      this.clearTerminalState();
+      this.clearTerminalState(error === void 0 || BigInt(error) === 0n);
       await transportClose;
     }
     /**
@@ -43890,20 +43904,21 @@ var PlayaPlayer = (() => {
       this.engine = new MoqtPlayer(moqtPlayerConfig);
       this.wireEngineEvents();
       this.timeCtrl = new TimeController(() => {
-        let videoIsActive;
-        if (this.ownsVideo) {
-          videoIsActive = this.videoElement != null && !this.videoElement.hidden;
-        } else {
-          const effectiveType = this._activeMediaType ?? (this.strategy === "webcodecs" ? "canvas" : "video");
-          videoIsActive = effectiveType === "video";
-        }
-        if (videoIsActive && this.videoElement) {
-          this._currentTime = this.videoElement.currentTime * 1e3;
-        } else {
-          this._currentTime = this.engine.stats.playbackDurationMs;
-        }
+        this._currentTime = this.readPosition();
         this.emitter.emit("timeupdate", { currentTime: this._currentTime });
       });
+    }
+    /** The live playback position in ms, from the active render sink. */
+    readPosition() {
+      let videoIsActive;
+      if (this.ownsVideo) {
+        videoIsActive = this.videoElement != null && !this.videoElement.hidden;
+      } else {
+        const effectiveType = this._activeMediaType ?? (this.strategy === "webcodecs" ? "canvas" : "video");
+        videoIsActive = effectiveType === "video";
+      }
+      if (videoIsActive && this.videoElement) return this.videoElement.currentTime * 1e3;
+      return this.engine.stats.playbackDurationMs;
     }
     // ─── Properties ──────────────────────────────────────────────────
     /** Current player state. */
@@ -43922,8 +43937,16 @@ var PlayaPlayer = (() => {
     get activeMediaType() {
       return this._activeMediaType;
     }
-    /** Current playback position in ms. */
+    /**
+     * Current playback position in ms.
+     *
+     * Read live while playing: the `timeupdate` ticker runs on animation frames,
+     * which browsers pause for a hidden page, so a cached value would freeze
+     * there while playback continues. Otherwise (paused, loading, just sought)
+     * it is the last committed position.
+     */
     get currentTime() {
+      if (this._state === "playing") this._currentTime = this.readPosition();
       return this._currentTime;
     }
     /** Last video draw evidence, not content position; null for unsupported outputs. */
