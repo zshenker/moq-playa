@@ -120,7 +120,7 @@ groupTail?.observeDiagnostics(player.diagnosticSource, createMediaDiagnostics);
 const abrTrace: { timeMs: number; type: string; data: unknown }[] = [];
 if (abr) {
   for (const type of ['quality_switching', 'quality_switched', 'quality_switch_failed', 'stall', 'stall_recovered',
-    'catch_up_changed'] as const) {
+    'catch_up_changed', 'abr_probe'] as const) {
     player.diagnosticSource.on(type, data => abrTrace.push({ timeMs: performance.now(), type,
       data: 'error' in data ? { ...data, error: String(data.error) } : data }));
   }
