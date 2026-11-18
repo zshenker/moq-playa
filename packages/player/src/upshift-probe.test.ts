@@ -21,11 +21,21 @@ describe('ProbeMeter', () => {
     expect(meter.result(5_000, 1)).toMatchObject({ kind: 'inconclusive' });
   });
 
-  it('times a burst shorter than the minimum window against that window, as a lower bound', () => {
+  it('without a send time, times a burst shorter than the minimum window against that window', () => {
     const meter = new ProbeMeter();
     meter.observeProbe(1_000, 0);
     meter.observeProbe(40_000, 5_000);
-    expect(meter.result(1, 20_000)).toMatchObject({ kind: 'measured', linkKbps: 40_000 * 8 / 20_000 * 1000, durationUs: 20_000, lowerBound: true });
+    expect(meter.result(1, 20_000)).toMatchObject({ kind: 'measured', linkKbps: 41_000 * 8 / 20_000 * 1000, durationUs: 20_000, lowerBound: true });
+  });
+
+  it('scores a short burst from the FETCH send, so a batched burst cannot overstate the link', () => {
+    // 8 kB that really trickled in at ~400 kbps over 160 ms, but a busy main
+    // thread handled every object at once at 200 ms.
+    const meter = new ProbeMeter(0);
+    for (let i = 0; i < 8; i++) meter.observeProbe(1_000, 200_000);
+    const result = meter.result(1, 40_000);
+    expect(result).toMatchObject({ kind: 'measured', lowerBound: true, bytes: 8_000, durationUs: 200_000 });
+    expect(result.kind === 'measured' && result.linkKbps).toBeLessThanOrEqual(400);
   });
 });
 
@@ -36,8 +46,8 @@ function harness() {
   const verdicts: ProbeVerdict[] = [];
   let arrive!: (bytes: number) => void, end!: (ok: boolean, reason?: string) => void;
   let cancels = 0;
-  const start = (nextBitrateKbps = 3_000) => probe.start({
-    request: { trackName: 'v', startGroup: 1n, startObject: 1n, endGroup: 1n, endObject: 20n }, nextBitrateKbps,
+  const start = (requiredKbps = 3_000) => probe.start({
+    request: { trackName: 'v', startGroup: 1n, startObject: 1n, endGroup: 1n, endObject: 20n }, requiredKbps,
     // Like the transport, cancellation reports the local discard synchronously.
     issue: (_r, a, e) => { arrive = a; end = e; return { cancel: () => { cancels++; e(false, 'stream ended: local-discard'); } }; },
     onVerdict: v => verdicts.push(v),

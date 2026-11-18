@@ -56,10 +56,10 @@ const LADDER: readonly Rung[] = [
   { name: 'v400', bitrateBps: 400_000 },
 ];
 
-function frameBytes(bitrateBps: number, frameIndex: number): number {
+function frameBytes(bitrateBps: number, frameIndex: number, keyframeShare = KEYFRAME_SHARE): number {
   const gopBytes = bitrateBps * (GOP_FRAMES / FPS) / 8;
   return Math.round(frameIndex % GOP_FRAMES === 0
-    ? gopBytes * KEYFRAME_SHARE
+    ? gopBytes * keyframeShare
     : gopBytes * (1 - KEYFRAME_SHARE) / (GOP_FRAMES - 1));
 }
 
@@ -158,6 +158,8 @@ class SourcePacedRelay {
   readonly standaloneFetches: { atUs: number; requestId: bigint; trackName: string; options: any }[] = [];
   /** How the relay answers a standalone FETCH. */
   standaloneFetchMode: 'serve' | 'refuse' = 'serve';
+  /** Keyframe share of each group's bytes; low-bitrate encodes run far above 0.2. */
+  keyframeShare = KEYFRAME_SHARE;
   congestedUntilUs = Infinity;
   private readonly fetches: JoiningFetch[] = [];
   private readonly cancelledFetches = new Set<bigint>();
@@ -376,7 +378,7 @@ class SourcePacedRelay {
     const rung = (name: string) => LADDER.find(r => r.name === name)!;
     const released: Array<{ sub: Subscription; frameIndex: number; releaseUs: number; fetch?: JoiningFetch }> = [...due, ...fetched];
     for (const d of released.sort((a, b) => a.releaseUs - b.releaseUs)) {
-      const bytes = Math.round(frameBytes(rung(d.sub.trackName).bitrateBps, d.frameIndex) * this.contentScale);
+      const bytes = Math.round(frameBytes(rung(d.sub.trackName).bitrateBps, d.frameIndex, this.keyframeShare) * this.contentScale);
       this.queued.push({ sub: d.sub, frameIndex: d.frameIndex, bytes, releaseUs: d.releaseUs,
         ...(d.fetch !== undefined ? { fetch: d.fetch } : {}) });
     }
@@ -500,6 +502,8 @@ interface Scenario {
   readonly closeAtUs?: number;
   /** How the relay answers a standalone FETCH (default 'serve'). */
   readonly standaloneFetch?: 'serve' | 'refuse';
+  /** Keyframe share of each group's bytes (default 0.2). */
+  readonly keyframeShare?: number;
   /**
    * CMAF: a readable CMAF Header in the catalog (default), or opaque bytes —
    * a header the player cannot parse, which leaves it no delivery-lag signal.
@@ -562,6 +566,7 @@ async function runScenario(s: Scenario): Promise<Run> {
     s.relayPriority, s.joiningFetch, s.draft);
   relay.congestedUntilUs = s.congestedUntilUs ?? Infinity;
   relay.standaloneFetchMode = s.standaloneFetch ?? 'serve';
+  relay.keyframeShare = s.keyframeShare ?? KEYFRAME_SHARE;
   let clockUs = 0;
   let firstVideoUs: number | null = null;
   const clock = { now: () => clockUs };
@@ -962,6 +967,24 @@ describe('ABR under source-paced live delivery', () => {
       // short-GOP bottom rung.
       const run = await runScenario({ packaging: 'loc', capacityBps: AMPLE_BPS, durationUs: SECONDS(40), startLevel: 4, contentScale: 0.4 });
       expect(run.switches[0]).toMatchObject({ from: 'v400', to: 'v800' });
+      expect(run.stallsAtUs).toEqual([]);
+    });
+
+    // A sub-360p bottom rung as low-bitrate encoders produce it: half of each
+    // group in the keyframe (which a probe skips), at 40% of nominal (~160 kb/s).
+    const lowRung = { packaging: 'loc' as const, startLevel: 4, contentScale: 0.4, keyframeShare: 0.5, durationUs: SECONDS(40) };
+
+    it('a sub-360p bottom rung with a heavy keyframe still climbs on an ample link', async () => {
+      const run = await runScenario({ ...lowRung, capacityBps: AMPLE_BPS });
+      expect(run.switches[0]).toMatchObject({ from: 'v400', to: 'v800' });
+      expect(run.switches[0]!.atUs).toBeLessThan(SECONDS(15));
+      expect(run.stallsAtUs).toEqual([]);
+    });
+
+    it('a sub-360p bottom rung holds on a link that cannot carry the next rung', async () => {
+      // The step is judged on v800's catalogued 800 kb/s: 1.3x needs 1040 kb/s.
+      const run = await runScenario({ ...lowRung, capacityBps: 400_000 });
+      expect(run.switches).toEqual([]);
       expect(run.stallsAtUs).toEqual([]);
     });
 

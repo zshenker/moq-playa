@@ -14,7 +14,7 @@
  * sends them as fast as the path allows; at low priority they take only
  * capacity the live media leaves idle. While the burst is arriving the path
  * is saturated, so everything received in that window (probe and live
- * media), measured from the first probe object to exclude the request round
+ * media, audio included), measured from the first probe object to exclude the request round
  * trip, estimates the path's capacity.
  *
  * This module owns the measurement and the probing schedule. It issues no
@@ -43,13 +43,17 @@ export type ProbeResult =
  */
 export class ProbeMeter {
   private firstUs: number | null = null;
+  private firstBytes = 0;
   private lastUs = 0;
   private bytes = 0;
   private objects = 0;
 
+  /** @param sentUs When the FETCH was sent, if known: anchors the lower bound. */
+  constructor(private readonly sentUs?: number) {}
+
   observeProbe(bytes: number, atUs: number): void {
     this.objects++;
-    if (this.firstUs === null) { this.firstUs = atUs; this.lastUs = atUs; return; }
+    if (this.firstUs === null) { this.firstUs = atUs; this.lastUs = atUs; this.firstBytes = bytes; return; }
     this.lastUs = Math.max(this.lastUs, atUs);
     this.bytes += bytes;
   }
@@ -64,23 +68,32 @@ export class ProbeMeter {
   elapsedUs(nowUs: number): number | null { return this.firstUs === null ? null : nowUs - this.firstUs; }
 
   /**
-   * Ends the window at the last probe object (the probe's FIN). A burst that
-   * arrives inside `minDurationUs` is timed against `minDurationUs` instead:
-   * clock resolution and callback batching make a shorter span unreliable,
-   * but the bytes did arrive at least that fast, so the result is a lower
-   * bound rather than nothing.
+   * Ends the window at the last probe object (the probe's FIN).
+   *
+   * A burst that arrives inside `minDurationUs` cannot be timed from its own
+   * first object: clock resolution and callback batching (a busy main thread
+   * handling objects that trickled in over far longer) can collapse the span
+   * to nothing. Such a burst is scored as a lower bound instead: every byte,
+   * the first object's too, over the time from sending the FETCH to its last
+   * object. Both stamps err the safe way (sent no later, received no
+   * earlier), so the round trip makes the bound conservative but never
+   * optimistic. Without a send time it falls back to `minDurationUs`.
    */
   result(minBytes: number, minDurationUs: number, early = false, endUs?: number): ProbeResult {
     if (this.firstUs === null || this.objects < 2) return { kind: 'inconclusive', reason: 'too few objects' };
     if (this.bytes < minBytes) return { kind: 'inconclusive', reason: `only ${this.bytes} bytes` };
-    const spanUs = (endUs ?? this.lastUs) - this.firstUs, lowerBound = spanUs < minDurationUs;
-    const durationUs = Math.max(spanUs, minDurationUs);
-    return { kind: 'measured', linkKbps: (this.bytes * 8) / durationUs * 1000, bytes: this.bytes, durationUs, early, lowerBound };
+    const endAt = endUs ?? this.lastUs, spanUs = endAt - this.firstUs;
+    if (spanUs >= minDurationUs) {
+      return { kind: 'measured', linkKbps: (this.bytes * 8) / spanUs * 1000, bytes: this.bytes, durationUs: spanUs, early, lowerBound: false };
+    }
+    const bytes = this.bytes + this.firstBytes;
+    const durationUs = this.sentUs === undefined ? minDurationUs : Math.max(endAt - this.sentUs, 1_000);
+    return { kind: 'measured', linkKbps: (bytes * 8) / durationUs * 1000, bytes, durationUs, early, lowerBound: true };
   }
 }
 
 export interface UpshiftProbeOptions {
-  /** Required estimated capacity as a multiple of the next rung's bitrate. */
+  /** Required estimated capacity as a multiple of the bitrate the step needs. */
   readonly headroom: number;
   /** First retry delay after a probe that did not justify an upshift. */
   readonly initialBackoffUs: number;
@@ -139,7 +152,7 @@ export type ProbeVerdict =
  */
 export class UpshiftProbe {
   private inFlight: { id: number; meter: ProbeMeter; startedUs: number; handle: ProbeHandle | null;
-    nextBitrateKbps: number; onVerdict: (v: ProbeVerdict) => void } | null = null;
+    requiredKbps: number; onVerdict: (v: ProbeVerdict) => void } | null = null;
   private nextProbeUs = 0;
   private backoffUs: number;
   private seq = 0;
@@ -172,14 +185,16 @@ export class UpshiftProbe {
    */
   start(params: {
     request: ProbeRequest;
-    nextBitrateKbps: number;
+    /** Total bitrate the step needs: the next video rung plus any audio. */
+    requiredKbps: number;
     issue: (request: ProbeRequest, arrive: (bytes: number) => void, end: (ok: boolean, reason?: string) => void) => ProbeHandle;
     onVerdict: (verdict: ProbeVerdict) => void;
   }): void {
     if (this.inFlight) return;
     const id = ++this.seq;
-    const state = { id, meter: new ProbeMeter(), startedUs: this.clock.now(), handle: null as ProbeHandle | null,
-      nextBitrateKbps: params.nextBitrateKbps, onVerdict: params.onVerdict };
+    const startedUs = this.clock.now();
+    const state = { id, meter: new ProbeMeter(startedUs), startedUs, handle: null as ProbeHandle | null,
+      requiredKbps: params.requiredKbps, onVerdict: params.onVerdict };
     this.inFlight = state;
     const current = () => this.inFlight?.id === id;
     try {
@@ -209,7 +224,7 @@ export class UpshiftProbe {
     const now = this.clock.now(), elapsed = state.meter.elapsedUs(now);
     if (elapsed === null || elapsed < this.options.earlyUpshiftUs) return;
     const result = state.meter.result(this.options.minBytes, this.options.minDurationUs, true, now);
-    const enough = result.kind === 'measured' && result.linkKbps >= state.nextBitrateKbps * this.options.headroom;
+    const enough = result.kind === 'measured' && result.linkKbps >= state.requiredKbps * this.options.headroom;
     if (!enough && elapsed < this.options.decideByUs) return;
     // Settle first: cancelling can report the stream's local discard
     // synchronously, which must not overwrite this verdict.
@@ -241,7 +256,7 @@ export class UpshiftProbe {
     let verdict: ProbeVerdict;
     if (result.kind === 'measured') {
       const estimateKbps = result.linkKbps;
-      verdict = estimateKbps >= state.nextBitrateKbps * this.options.headroom
+      verdict = estimateKbps >= state.requiredKbps * this.options.headroom
         ? { upshift: true, estimateKbps, result }
         : { upshift: false, estimateKbps, result };
     } else {

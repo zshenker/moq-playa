@@ -10798,6 +10798,12 @@ export class MoqtPlayer {
     if (into < MoqtPlayer.PROBE_GROUP_WINDOW[0] || into > MoqtPlayer.PROBE_GROUP_WINDOW[1]) return;
     const nextKbps = (next.bitrate ?? 0) / 1000;
     if (!(nextKbps > 0)) return;
+    // The link must carry the selected audio as well; on low rungs it is a
+    // large share of the total.
+    const audioSel = this._selection.audio;
+    const audioTrack = audioSel ? this.catalogTrackFor(audioSel.name, audioSel.namespaceFields, 'audio') : undefined;
+    const audioKbps = (audioTrack?.bitrate ?? 0) / 1000;
+    const requiredKbps = nextKbps + (Number.isFinite(audioKbps) && audioKbps > 0 ? audioKbps : 0);
     // The current group from its second object to the newest one seen: the
     // keyframe is the largest object, and a scheduler that cannot pre-empt an
     // object in progress would hold live media behind it.
@@ -10807,10 +10813,10 @@ export class MoqtPlayer {
     const name = this.enc.encode(current.name);
     const targetTrack = next;
     this.log.info('ABR probe: FETCH %s group %s objects 1-%s to test for %s (%s kbps)', current.name,
-      String(request.startGroup), String(latest.object), next.name, String(nextKbps));
+      String(request.startGroup), String(latest.object), next.name, `${nextKbps}+${requiredKbps - nextKbps} audio`);
     probe.start({
       request,
-      nextBitrateKbps: nextKbps,
+      requiredKbps,
       issue: (request, arrive, end) => {
         let requestId: bigint | null = null, cancelled = false;
         connection.fetch(ns, name, {
@@ -11785,9 +11791,10 @@ export class MoqtPlayer {
         // At replay time, the new track is registered and onObject fires normally.
         if (this.subscriptionManager?.getMediaType(alias) !== undefined) {
           this.recordVideoPayload(receipt, obj);
-          if (receipt) {
-            this.noteLiveVideoGroup(receipt.owner, obj);
-            this.upshiftProbe?.observeLive(receipt.bytes);
+          if (receipt) this.noteLiveVideoGroup(receipt.owner, obj);
+          // Every live media byte (audio too) shares the path a probe measures.
+          if (this.upshiftProbe?.probing && obj.kind === 'data') {
+            this.upshiftProbe.observeLive(obj.payload.byteLength + (obj.extensions?.byteLength ?? 0));
           }
           this.watchdog.fulfill('first_media_object');
           // Bind the LOC wire profile AND the malformed-recovery target to THIS
