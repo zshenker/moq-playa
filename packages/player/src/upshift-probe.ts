@@ -104,8 +104,10 @@ export const DEFAULT_UPSHIFT_PROBE_OPTIONS: UpshiftProbeOptions = {
   initialBackoffUs: 10_000_000,
   maxBackoffUs: 120_000_000,
   timeoutUs: 4_000_000,
-  minBytes: 32_000,
-  minDurationUs: 20_000,
+  // A low rung's partial group can be only ~15 kB; a whole range arriving
+  // inside minDurationUs is scored as a lower bound over that window.
+  minBytes: 8_000,
+  minDurationUs: 40_000,
   earlyUpshiftUs: 100_000,
   decideByUs: 100_000,
 };

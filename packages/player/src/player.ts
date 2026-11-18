@@ -10476,6 +10476,16 @@ export class MoqtPlayer {
   private static readonly PROBE_QUIET_US = 4_000_000;
   /** Wait after playback starts, and after an upshift, before probing. */
   private static readonly PROBE_SETTLE_US = 3_000_000;
+  /**
+   * After a probe-led upshift commits, an empty MSE reading without a
+   * reported stall is the switch window, not starvation; the stall handler
+   * owns real starvation.
+   */
+  private static readonly SWITCH_SETTLE_US = 3_000_000;
+  /** When the last probe-led upshift was requested; 0 when none is pending or settling. */
+  private probeUpshiftRequestedUs = 0;
+  /** Last MSE stall reported for missing delivery (not a source media gap). */
+  private lastMseStallUs = 0;
   /** Subscriber priority of a probe FETCH: below all live media. */
   private static readonly PROBE_PRIORITY = 255n;
   /** Capacity probing for upshift; created on first use with the player clock. */
@@ -10657,6 +10667,12 @@ export class MoqtPlayer {
       const bufferUs = source.getBufferAheadUs();
       if (bufferUs === null || !Number.isFinite(bufferUs) || bufferUs < 0) return;
       if (bufferUs === 0) {
+        // Just after a probe-led upshift MSE can read empty while the new
+        // rung's media lands; without a reported stall that is not a reason
+        // to cascade further downshifts.
+        const switchedAt = controller.lastSwitchAtUs, nowUs = this.clock.now();
+        if (this.probeUpshiftRequestedUs > 0 && switchedAt !== undefined && switchedAt >= this.probeUpshiftRequestedUs
+            && nowUs - switchedAt < MoqtPlayer.SWITCH_SETTLE_US && this.lastMseStallUs < switchedAt) return;
         // Truly empty — always report emergency, don't let stale
         // bandwidth estimates suppress the downshift.
         effectiveBufferUs = 0;
@@ -10719,6 +10735,7 @@ export class MoqtPlayer {
       if (!live() || lag && freshLag?.state !== lag.state) return;
       if (isDown) {
         this.lastAbrDownshiftUs = nowUs;
+        this.probeUpshiftRequestedUs = 0;
         this.upshiftProbe?.abort();
         this.upshiftProbe?.resetBackoff();
       }
@@ -10829,6 +10846,7 @@ export class MoqtPlayer {
     if (!controller || controller.peekHigherVideoQuality() !== target) return;
     this.upshiftProbe?.defer(MoqtPlayer.PROBE_SETTLE_US + MoqtPlayer.ABR_UPSHIFT_STABILITY_US / 3);
     this.log.warn('Probe estimate %.0fkbps → upshift to %s', verdict.estimateKbps, target.name);
+    this.probeUpshiftRequestedUs = this.clock.now();
     this.selectVideoTrack({ name: target.name, namespace: trackNamespaceFields(target, this.config.namespace) }, 'bandwidth', 'upshift')
       .catch((err) => { this.log.warn('ABR upshift to "%s" failed: %s', target.name, err); });
   }
@@ -13728,6 +13746,7 @@ export class MoqtPlayer {
         // A media-gap stall is missing SOURCE media the adapter already
         // skipped — not a bandwidth signal. Count it, never downshift on it.
         if (cause === 'media-gap') return;
+        this.lastMseStallUs = this.clock.now();
 
         // Don't cascade downshifts while a switch is already in flight.
         // Each switch needs time for the relay to deliver the new track's

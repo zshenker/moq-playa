@@ -295,6 +295,9 @@ export class QualityController {
     this.adoptCommittedTrack(track);
   }
 
+  /** When the last video switch was committed (controller clock µs). */
+  get lastSwitchAtUs(): number | undefined { return this.lastSwitchTimeUs; }
+
   /** The one commit body: narrow to the track's codec family, index it, and
    *  start the switch cooldown. */
   private adoptCommittedTrack(track: CatalogTrack): void {

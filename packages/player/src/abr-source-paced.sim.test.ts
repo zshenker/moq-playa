@@ -948,6 +948,23 @@ describe('ABR under source-paced live delivery', () => {
       expect(run.probes.every(p => !p.upshift)).toBe(true);
     });
 
+    it('an empty MSE reading just after a probe upshift does not cascade downshifts', async () => {
+      // CMAF upshifts to v3000 at ~5.5 s on this link; MSE then reads empty for
+      // a second while the new rung's media lands, with no stall reported.
+      const run = await runScenario({ packaging: 'cmaf', capacityBps: AMPLE_BPS, durationUs: SECONDS(20),
+        bufferAheadUs: now => now > 5_600_000 && now < 6_600_000 ? 0 : 300_000 });
+      expect(run.switches[0]?.to).toBe('v3000');
+      expect(run.switches.filter(sw => rungIndex(sw.to) > rungIndex(sw.from))).toEqual([]);
+    });
+
+    it('climbs from the bottom rung: a small partial group still proves capacity', async () => {
+      // VBR content at 40% of nominal: a probe range of ~10-20 kB, as on a
+      // short-GOP bottom rung.
+      const run = await runScenario({ packaging: 'loc', capacityBps: AMPLE_BPS, durationUs: SECONDS(40), startLevel: 4, contentScale: 0.4 });
+      expect(run.switches[0]).toMatchObject({ from: 'v400', to: 'v800' });
+      expect(run.stallsAtUs).toEqual([]);
+    });
+
     it('a relay that refuses the probe FETCH leaves playback alone', async () => {
       const run = await runScenario({ packaging: 'loc', capacityBps: AMPLE_BPS, durationUs: SECONDS(60), standaloneFetch: 'refuse' });
       expect(run.switches).toEqual([]);
