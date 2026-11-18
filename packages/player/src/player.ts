@@ -10689,7 +10689,7 @@ export class MoqtPlayer {
     });
 
     if (decision.action === 'hold') {
-      if (this.config.abrUpshiftProbe !== false) this.maybeProbeForUpshift(effectiveBufferUs, live);
+      if (this.config.abrUpshiftProbe === true) this.maybeProbeForUpshift(effectiveBufferUs, live);
       return;
     }
 

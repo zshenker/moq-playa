@@ -71,6 +71,7 @@ const player = new Player(null, {
   ...(params.has('gestureAudio') ? { audioActivation: 'gesture' as const } : {}),
   startLevel: abr && !params.has('level') ? 'auto' : Number(params.get('level') ?? 0),
   ...(params.has('altGroup') ? { videoAltGroup: Number(params.get('altGroup')) } : {}),
+  ...(params.get('probe') === '1' ? { abrUpshiftProbe: true } : {}),
   moqtPlayerConfig: {
     logLevel: params.has('debug') ? 'debug' : 'none',
     ...(warmObserver ? { warmStartCurrentGroup: params.get('warm') === '1', objectTransform: warmObserver.transform } : {}),

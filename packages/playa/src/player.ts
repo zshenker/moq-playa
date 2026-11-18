@@ -757,6 +757,7 @@ export class Player {
       catalogTrackName: opts.catalogTrackName === undefined ? DEFAULTS.catalogTrackName : opts.catalogTrackName,
       autoQuality: opts.autoQuality ?? DEFAULTS.autoQuality,
       startLevel: opts.startLevel ?? DEFAULTS.startLevel,
+      ...(opts.abrUpshiftProbe !== undefined ? { abrUpshiftProbe: opts.abrUpshiftProbe } : {}),
       clock: this.audioClock,
       createTransport: createWebTransport({
         ...(opts.certHash ? { certHash: opts.certHash } : {}),
