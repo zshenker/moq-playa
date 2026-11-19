@@ -10501,8 +10501,24 @@ export class MoqtPlayer {
    * rest of the group to drain any backlog before the next keyframe.
    */
   private static readonly PROBE_GROUP_WINDOW = [0.35, 0.6] as const;
+  /**
+   * The window when the last current-group burst was too small to judge and
+   * the previous group is unavailable: later in the group, more is published.
+   */
+  private static readonly PROBE_GROUP_WINDOW_LATE = [0.6, 0.85] as const;
+  /**
+   * A previous-group probe asks for about this long of data at the rate it
+   * must show: long enough to time (and to span a transport delivery-rate
+   * sample), short enough that little is queued behind an early cancel.
+   */
+  private static readonly PROBE_BURST_TARGET_S = 0.25;
   /** Sessions that reported their close: a probe is never sent on one. */
   private readonly closedProbeConnections = new WeakSet<MoqtConnection>();
+  /**
+   * Sessions whose relay refused (or returned nothing for) a FETCH of the
+   * previous group: probes there use the current group only.
+   */
+  private readonly probePreviousGroupUnavailable = new WeakSet<MoqtConnection>();
 
   private isLocDeliveryHealthy(): boolean {
     const now = this.clock.now();
@@ -10793,9 +10809,15 @@ export class MoqtPlayer {
     const owner = this.videoLagOwner() ?? this.captureVideoMeasurementOwner();
     const latest = this.latestLiveVideoGroup;
     if (!owner || !latest || latest.alias !== owner.alias || latest.connection !== connection
-        || latest.durationUs === null || latest.object < 2n) return;
+        || latest.durationUs === null) return;
+    // Prefer the whole previous group: a complete group is the largest burst
+    // a relay holding more than one group can send, and its bytes are long
+    // published. Without it, use the current group so far.
+    const previous = latest.group > 0n && !this.probePreviousGroupUnavailable.has(connection);
+    if (!previous && latest.object < 2n) return;
+    const window = !previous && probe.wantsLarger ? MoqtPlayer.PROBE_GROUP_WINDOW_LATE : MoqtPlayer.PROBE_GROUP_WINDOW;
     const into = (now - latest.startedUs) / latest.durationUs;
-    if (into < MoqtPlayer.PROBE_GROUP_WINDOW[0] || into > MoqtPlayer.PROBE_GROUP_WINDOW[1]) return;
+    if (into < window[0] || into > window[1]) return;
     const nextKbps = (next.bitrate ?? 0) / 1000;
     if (!(nextKbps > 0)) return;
     // The link must carry the selected audio as well; on low rungs it is a
@@ -10804,31 +10826,57 @@ export class MoqtPlayer {
     const audioTrack = audioSel ? this.catalogTrackFor(audioSel.name, audioSel.namespaceFields, 'audio') : undefined;
     const audioKbps = (audioTrack?.bitrate ?? 0) / 1000;
     const requiredKbps = nextKbps + (Number.isFinite(audioKbps) && audioKbps > 0 ? audioKbps : 0);
-    // The current group from its second object to the newest one seen: the
-    // keyframe is the largest object, and a scheduler that cannot pre-empt an
-    // object in progress would hold live media behind it.
-    const request = { trackName: current.name, startGroup: latest.group, startObject: 1n,
-      endGroup: latest.group, endObject: latest.object + 1n };
+    // From each group's second object: the keyframe is the largest object, and
+    // a scheduler that cannot pre-empt an object in progress would hold live
+    // media behind it. The current group goes up to the newest object seen;
+    // the previous group up to PROBE_BURST_TARGET_S at the required rate,
+    // estimated from the current rung's bitrate and object rate (whole when
+    // that can't be estimated or the group is smaller).
+    let previousEnd = 0n;
+    const objectsPerGroup = Number(latest.object) / into, currentKbps = (current.bitrate ?? 0) / 1000;
+    if (previous && objectsPerGroup >= 2 && Number.isFinite(currentKbps) && currentKbps > 0) {
+      const bytesPerObject = (currentKbps * 125 * (latest.durationUs / 1e6)) / objectsPerGroup;
+      const targetBytes = requiredKbps * 125 * probe.options.headroom * MoqtPlayer.PROBE_BURST_TARGET_S;
+      const count = Math.max(2, Math.ceil(targetBytes / bytesPerObject));
+      if (count + 1 < objectsPerGroup) previousEnd = BigInt(count + 1);
+    }
+    const request = previous
+      ? { trackName: current.name, startGroup: latest.group - 1n, startObject: 1n, endGroup: latest.group - 1n, endObject: previousEnd }
+      : { trackName: current.name, startGroup: latest.group, startObject: 1n, endGroup: latest.group, endObject: latest.object + 1n };
     const ns = trackNamespaceFields(current, this.config.namespace).map(field => this.enc.encode(field));
     const name = this.enc.encode(current.name);
     const targetTrack = next;
     this.log.info('ABR probe: FETCH %s group %s objects 1-%s to test for %s (%s kbps)', current.name,
-      String(request.startGroup), String(latest.object), next.name, `${nextKbps}+${requiredKbps - nextKbps} audio`);
+      String(request.startGroup), request.endObject === 0n ? 'end' : String(request.endObject - 1n), next.name, `${nextKbps}+${requiredKbps - nextKbps} audio`);
     probe.start({
       request,
       requiredKbps,
       issue: (request, arrive, end) => {
-        let requestId: bigint | null = null, cancelled = false;
+        let requestId: bigint | null = null, cancelled = false, objects = 0;
+        // A refused or empty previous group says nothing about the link: fall
+        // back to the current group on this session and retry soon.
+        const unavailable = (reason: string): boolean => {
+          if (!previous || objects > 0 || cancelled) return false;
+          this.probePreviousGroupUnavailable.add(connection);
+          end(false, `previous group unavailable (${reason})`, true);
+          return true;
+        };
         connection.fetch(ns, name, {
           startGroup: request.startGroup, startObject: request.startObject, endGroup: request.endGroup, endObject: request.endObject,
           groupOrder: 'ascending', subscriberPriority: varint(MoqtPlayer.PROBE_PRIORITY),
           onRequestId: (id: bigint) => { requestId = BigInt(id); },
           receiver: {
-            onObject: (object: MoqtObject) => { if (object.kind === 'data') arrive(object.payload.byteLength); },
-            onClosed: (terminal: string) => end(terminal === 'fin', `stream ended: ${terminal}`),
+            onObject: (object: MoqtObject) => { if (object.kind === 'data') { objects++; arrive(object.payload.byteLength); } },
+            onClosed: (terminal: string) => {
+              if (unavailable(`stream ended: ${terminal} with no objects`)) return;
+              end(terminal === 'fin', `stream ended: ${terminal}`);
+            },
           },
         }).then(id => { requestId ??= BigInt(id); if (cancelled) void connection.fetchCancel(varint(requestId)).catch(() => {}); })
-          .catch((error: unknown) => end(false, error instanceof Error ? error.message : String(error)));
+          .catch((error: unknown) => {
+            const reason = error instanceof Error ? error.message : String(error);
+            if (!unavailable(reason)) end(false, reason);
+          });
         return {
           cancel: () => {
             cancelled = true;
@@ -10844,7 +10892,8 @@ export class MoqtPlayer {
     const r = verdict.result;
     this.log.info('ABR probe: %s; estimate %s kbps → %s', r.kind === 'measured'
       ? `${r.bytes} B over ${r.lowerBound ? '<' : ''}${(r.durationUs / 1000).toFixed(0)} ms${r.early ? ' (decided early)' : ''}` : `${r.kind}: ${r.reason}`,
-      verdict.estimateKbps === null ? 'n/a' : Math.round(verdict.estimateKbps), verdict.upshift ? `upshift to ${target.name}` : 'hold');
+      verdict.estimateKbps === null ? 'n/a' : Math.round(verdict.estimateKbps),
+      verdict.upshift ? `upshift to ${target.name}` : verdict.retryLarger ? 'hold; too small to judge, retrying larger' : 'hold');
     this.emitter.emit('abr_probe', { type: 'abr_probe', result: r.kind, estimateKbps: verdict.estimateKbps,
       targetTrackName: target.name, upshift: verdict.upshift });
     if (!verdict.upshift || !live()) return;

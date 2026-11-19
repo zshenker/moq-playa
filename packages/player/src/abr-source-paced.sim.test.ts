@@ -157,7 +157,8 @@ class SourcePacedRelay {
   /** Every standalone FETCH the player sent, in order. */
   readonly standaloneFetches: { atUs: number; requestId: bigint; trackName: string; options: any }[] = [];
   /** How the relay answers a standalone FETCH. */
-  standaloneFetchMode: 'serve' | 'refuse' = 'serve';
+  /** 'current-group-only': like a relay that keeps one group, an older group is refused. */
+  standaloneFetchMode: 'serve' | 'refuse' | 'current-group-only' = 'serve';
   /** Keyframe share of each group's bytes; low-bitrate encodes run far above 0.2. */
   keyframeShare = KEYFRAME_SHARE;
   congestedUntilUs = Infinity;
@@ -233,6 +234,9 @@ class SourcePacedRelay {
         if (!opts?.receiver) return varint(requestId);
         if (relay.standaloneFetchMode === 'refuse') throw new Error('REQUEST_ERROR NOT_SUPPORTED');
         const largest = Math.floor(relay.nowUs / FRAME_US);
+        if (relay.standaloneFetchMode === 'current-group-only' && Number(opts.startGroup) < Math.floor(largest / GOP_FRAMES)) {
+          throw new Error('REQUEST_ERROR 0x11 history unavailable');
+        }
         const first = Number(opts.startGroup) * GOP_FRAMES + Number(opts.startObject ?? 0n);
         const endGroup = Number(opts.endGroup ?? 0n), endObject = Number(opts.endObject ?? 0n);
         const last = Math.min(largest, endObject === 0 ? (endGroup + 1) * GOP_FRAMES - 1 : endGroup * GOP_FRAMES + endObject - 1);
@@ -501,7 +505,7 @@ interface Scenario {
   /** The relay drops the session at this time (µs). */
   readonly closeAtUs?: number;
   /** How the relay answers a standalone FETCH (default 'serve'). */
-  readonly standaloneFetch?: 'serve' | 'refuse';
+  readonly standaloneFetch?: 'serve' | 'refuse' | 'current-group-only';
   /** Keyframe share of each group's bytes (default 0.2). */
   readonly keyframeShare?: number;
   /**
@@ -936,6 +940,30 @@ describe('ABR under source-paced live delivery', () => {
       }
     });
 
+    it('probes the previous group, capped, and falls back to the current group on a relay that keeps one', async () => {
+      const groupOf = (atUs: number) => BigInt(Math.floor(atUs / FRAME_US / GOP_FRAMES));
+      const full = await runScenario({ packaging: 'loc', capacityBps: AMPLE_BPS, durationUs: SECONDS(40), bufferAheadUs: LL_BUFFER });
+      expect(full.switches.map(sw => sw.to)).toEqual(['v3000', 'v6000']);
+      expect(full.standaloneFetches.length).toBeGreaterThan(0);
+      for (const fetch of full.standaloneFetches) {
+        // The group before the one being published, from its second object, up
+        // to the burst cap or the whole group.
+        expect(fetch.options.startGroup).toBe(groupOf(fetch.atUs) - 1n);
+        expect(fetch.options.endGroup).toBe(fetch.options.startGroup);
+        expect(fetch.options.startObject).toBe(1n);
+        const end = Number(fetch.options.endObject);
+        expect(end === 0 || (end >= 3 && end < GOP_FRAMES)).toBe(true);
+      }
+
+      const one = await runScenario({ packaging: 'loc', capacityBps: AMPLE_BPS, durationUs: SECONDS(40), bufferAheadUs: LL_BUFFER,
+        standaloneFetch: 'current-group-only' });
+      expect(one.switches.map(sw => sw.to)).toEqual(['v3000', 'v6000']);
+      expect(one.stallsAtUs).toEqual([]);
+      expect(one.probes[0]?.result).toBe('inconclusive');
+      expect(one.standaloneFetches[0]!.options.startGroup).toBe(groupOf(one.standaloneFetches[0]!.atUs) - 1n);
+      for (const fetch of one.standaloneFetches.slice(1)) expect(fetch.options.startGroup).toBe(groupOf(fetch.atUs));
+    });
+
     it('steps up only as far as the link allows (5 Mbps: v3000, not v6000)', async () => {
       const run = await runScenario({ packaging: 'loc', capacityBps: 5_000_000, durationUs: SECONDS(90) });
       expect(run.switches.map(sw => sw.to)).toEqual(['v3000']);
@@ -993,8 +1021,12 @@ describe('ABR under source-paced live delivery', () => {
       expect(run.switches).toEqual([]);
       expect(run.stallsAtUs).toEqual([]);
       expect(run.errors).toEqual([]);
-      expect(run.probes.every(p => p.result === 'failed')).toBe(true);
-      expect(run.probes.length).toBeLessThanOrEqual(3);
+      // The first refusal is of the previous group: it says nothing about the
+      // link, so the next probe follows soon on the current group. Refusals
+      // of that back off as usual.
+      expect(run.probes[0]?.result).toBe('inconclusive');
+      expect(run.probes.slice(1).every(p => p.result === 'failed')).toBe(true);
+      expect(run.probes.length).toBeLessThanOrEqual(4);
     });
 
     it('after congestion clears, probes climb back without a stall', async () => {
