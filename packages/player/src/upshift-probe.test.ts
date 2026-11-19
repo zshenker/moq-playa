@@ -44,7 +44,7 @@ function harness() {
   const clock = { now: () => now };
   const probe = new UpshiftProbe(clock);
   const verdicts: ProbeVerdict[] = [];
-  let arrive!: (bytes: number) => void, end!: (ok: boolean, reason?: string) => void;
+  let arrive!: (bytes: number) => void, end!: (ok: boolean, reason?: string, retryable?: boolean) => void;
   let cancels = 0;
   const start = (requiredKbps = 3_000) => probe.start({
     request: { trackName: 'v', startGroup: 1n, startObject: 1n, endGroup: 1n, endObject: 20n }, requiredKbps,
@@ -53,7 +53,7 @@ function harness() {
     onVerdict: v => verdicts.push(v),
   });
   return { probe, verdicts, start, advance: (us: number) => { now += us; }, arrive: (b: number) => arrive(b),
-    end: (ok: boolean) => end(ok), cancels: () => cancels };
+    end: (ok: boolean, reason?: string, retryable?: boolean) => end(ok, reason, retryable), cancels: () => cancels };
 }
 
 describe('UpshiftProbe', () => {
@@ -118,6 +118,59 @@ describe('UpshiftProbe', () => {
     expect(h.probe.due()).toBe(false);
     expect(h.verdicts[0]).toMatchObject({ upshift: false, result: { kind: 'failed', reason: 'timed out' } });
     expect(h.cancels()).toBe(1);
+  });
+
+  it('retries a burst that ended too small to judge soon, without backing off', () => {
+    const h = harness();
+    const { smallRetryUs, maxSmallRetries, initialBackoffUs } = DEFAULT_UPSHIFT_PROBE_OPTIONS;
+    // The whole requested range arrives within 10 ms: a lower bound below the target.
+    const smallBurst = () => { h.start(30_000); h.arrive(1_000); h.advance(5_000); h.arrive(4_000); h.advance(5_000); h.arrive(4_000); h.end(true); };
+    for (let i = 0; i < maxSmallRetries; i++) {
+      smallBurst();
+      expect(h.verdicts.at(-1)).toMatchObject({ upshift: false, retryLarger: true, result: { kind: 'measured', lowerBound: true } });
+      expect(h.probe.wantsLarger).toBe(true);
+      h.advance(smallRetryUs - 1);
+      expect(h.probe.due()).toBe(false);
+      h.advance(1);
+      expect(h.probe.due()).toBe(true);
+    }
+    // Out of retries: back off as usual, at the initial (undoubled) backoff.
+    smallBurst();
+    expect(h.verdicts.at(-1)).toMatchObject({ upshift: false, retryLarger: false });
+    expect(h.probe.wantsLarger).toBe(false);
+    h.advance(initialBackoffUs - 1);
+    expect(h.probe.due()).toBe(false);
+    h.advance(1);
+    expect(h.probe.due()).toBe(true);
+  });
+
+  it('a too-small burst that still shows enough capacity upshifts', () => {
+    const h = harness();
+    h.start(300);
+    h.arrive(1_000); h.advance(5_000); h.arrive(8_000); h.advance(5_000); h.arrive(8_000); h.end(true);
+    expect(h.verdicts[0]).toMatchObject({ upshift: true, result: { kind: 'measured', lowerBound: true } });
+    expect(h.probe.wantsLarger).toBe(false);
+  });
+
+  it('a slow burst cut at decideByUs is evidence, not a small request: it backs off', () => {
+    const h = harness();
+    h.start(3_000);
+    h.arrive(1_000);
+    for (let i = 0; i < 10; i++) { h.advance(10_000); h.arrive(500); }
+    expect(h.verdicts[0]).toMatchObject({ upshift: false, retryLarger: false });
+    expect(h.probe.wantsLarger).toBe(false);
+    h.advance(DEFAULT_UPSHIFT_PROBE_OPTIONS.smallRetryUs);
+    expect(h.probe.due()).toBe(false);
+  });
+
+  it('a retryable failure (an unavailable range) is retried soon as inconclusive', () => {
+    const h = harness();
+    h.start();
+    h.end(false, 'previous group unavailable', true);
+    expect(h.verdicts[0]).toMatchObject({ upshift: false, retryLarger: true,
+      result: { kind: 'inconclusive', reason: 'previous group unavailable' } });
+    h.advance(DEFAULT_UPSHIFT_PROBE_OPTIONS.smallRetryUs);
+    expect(h.probe.due()).toBe(true);
   });
 
   it('abort leaves no verdict and ignores late arrivals', () => {
