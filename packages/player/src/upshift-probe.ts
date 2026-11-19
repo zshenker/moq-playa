@@ -117,6 +117,15 @@ export interface UpshiftProbeOptions {
    */
   readonly earlyUpshiftUs: number;
   readonly decideByUs: number;
+  /**
+   * A burst that ended on its own with too little data to time (a lower bound
+   * below the target, or too few bytes) says nothing about the link, only
+   * that the request was small. Probe again after this long, with a larger
+   * request, instead of backing off.
+   */
+  readonly smallRetryUs: number;
+  /** Consecutive small bursts retried before backing off as usual. */
+  readonly maxSmallRetries: number;
 }
 
 export const DEFAULT_UPSHIFT_PROBE_OPTIONS: UpshiftProbeOptions = {
@@ -132,6 +141,8 @@ export const DEFAULT_UPSHIFT_PROBE_OPTIONS: UpshiftProbeOptions = {
   minDurationUs: 40_000,
   earlyUpshiftUs: 100_000,
   decideByUs: 100_000,
+  smallRetryUs: 3_000_000,
+  maxSmallRetries: 2,
 };
 
 /** What a probe asks the player to request: one exact range of one track. */
@@ -152,7 +163,9 @@ export interface ProbeHandle {
 /** One verdict: step up to `targetTrack`, or stay. */
 export type ProbeVerdict =
   | { readonly upshift: true; readonly estimateKbps: number; readonly result: ProbeResult }
-  | { readonly upshift: false; readonly estimateKbps: number | null; readonly result: ProbeResult };
+  | { readonly upshift: false; readonly estimateKbps: number | null; readonly result: ProbeResult;
+    /** The burst was too small to judge; the next probe follows soon and should ask for more. */
+    readonly retryLarger: boolean };
 
 /**
  * Probing schedule: at most one probe in flight, exponential backoff after a
@@ -165,6 +178,7 @@ export class UpshiftProbe {
   private nextProbeUs = 0;
   private backoffUs: number;
   private seq = 0;
+  private smallStreak = 0;
   /** Verdicts so far, newest last (diagnostics and tests). */
   readonly history: Array<ProbeVerdict & { atUs: number }> = [];
 
@@ -173,6 +187,9 @@ export class UpshiftProbe {
   }
 
   get probing(): boolean { return this.inFlight !== null; }
+
+  /** The last probe was too small to judge: request a larger range next. */
+  get wantsLarger(): boolean { return this.smallStreak > 0; }
 
   /** True when no probe is running and the backoff has elapsed. */
   due(): boolean {
@@ -186,17 +203,19 @@ export class UpshiftProbe {
   }
 
   /** A downshift or upshift starts the schedule over. */
-  resetBackoff(): void { this.backoffUs = this.options.initialBackoffUs; }
+  resetBackoff(): void { this.backoffUs = this.options.initialBackoffUs; this.smallStreak = 0; }
 
   /**
    * Start a probe. `issue` sends the request and returns a handle; it reports
    * object arrivals through `arrive` and the stream's end through `end`.
+   * `end(false, reason, true)` marks a failure that says nothing about the
+   * link (e.g. the relay refused that range): it is retried soon.
    */
   start(params: {
     request: ProbeRequest;
     /** Total bitrate the step needs: the next video rung plus any audio. */
     requiredKbps: number;
-    issue: (request: ProbeRequest, arrive: (bytes: number) => void, end: (ok: boolean, reason?: string) => void) => ProbeHandle;
+    issue: (request: ProbeRequest, arrive: (bytes: number) => void, end: (ok: boolean, reason?: string, retryable?: boolean) => void) => ProbeHandle;
     onVerdict: (verdict: ProbeVerdict) => void;
   }): void {
     if (this.inFlight) return;
@@ -209,10 +228,13 @@ export class UpshiftProbe {
     try {
       state.handle = params.issue(params.request,
         bytes => { if (current()) { state.meter.observeProbe(bytes, this.clock.now()); this.decideEarly(); } },
-        (ok, reason) => {
+        (ok, reason, retryable) => {
           if (!current()) return;
+          if (!ok && retryable) { this.finish({ kind: 'inconclusive', reason: reason ?? 'range unavailable' }, true); return; }
+          // A burst that finished on its own was limited by what was requested,
+          // not by the link: if it was too small to judge, ask for more.
           this.finish(ok ? state.meter.result(this.options.minBytes, this.options.minDurationUs)
-            : { kind: 'failed', reason: reason ?? 'stream did not finish' });
+            : { kind: 'failed', reason: reason ?? 'stream did not finish' }, ok);
         });
     } catch (error) {
       if (current()) this.finish({ kind: 'failed', reason: error instanceof Error ? error.message : String(error) });
@@ -262,25 +284,35 @@ export class UpshiftProbe {
     state.handle?.cancel();
   }
 
-  private finish(result: ProbeResult): void {
+  /** @param supplyLimited The burst ended because the request ran out, not because of a deadline. */
+  private finish(result: ProbeResult, supplyLimited = false): void {
     const state = this.inFlight;
     if (!state) return;
     this.inFlight = null;
     const now = this.clock.now();
+    const enough = result.kind === 'measured' && result.linkKbps >= state.requiredKbps * this.options.headroom;
+    const small = supplyLimited && !enough
+      && (result.kind === 'inconclusive' || (result.kind === 'measured' && result.lowerBound));
+    const retryLarger = small && this.smallStreak < this.options.maxSmallRetries;
     let verdict: ProbeVerdict;
     if (result.kind === 'measured') {
-      const estimateKbps = result.linkKbps;
-      verdict = estimateKbps >= state.requiredKbps * this.options.headroom
-        ? { upshift: true, estimateKbps, result }
-        : { upshift: false, estimateKbps, result };
+      verdict = enough
+        ? { upshift: true, estimateKbps: result.linkKbps, result }
+        : { upshift: false, estimateKbps: result.linkKbps, result, retryLarger };
     } else {
-      verdict = { upshift: false, estimateKbps: null, result };
+      verdict = { upshift: false, estimateKbps: null, result, retryLarger };
     }
     this.history.push({ ...verdict, atUs: now });
     if (this.history.length > 32) this.history.shift();
     if (verdict.upshift) {
       this.backoffUs = this.options.initialBackoffUs;
+      this.smallStreak = 0;
+    } else if (retryLarger) {
+      // Not evidence about the link: neither back off nor double the backoff.
+      this.smallStreak++;
+      this.nextProbeUs = now + this.options.smallRetryUs;
     } else {
+      this.smallStreak = 0;
       this.nextProbeUs = now + this.backoffUs;
       this.backoffUs = Math.min(this.backoffUs * 2, this.options.maxBackoffUs);
     }
