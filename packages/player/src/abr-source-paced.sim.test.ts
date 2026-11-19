@@ -20,7 +20,7 @@
  * @module
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import { CmafAssembler } from '../../browser/src/cmaf-assembler.js';
 import { MoqtPlayer } from './player.js';
 import type { PlayerError } from './errors.js';
@@ -56,10 +56,10 @@ const LADDER: readonly Rung[] = [
   { name: 'v400', bitrateBps: 400_000 },
 ];
 
-function frameBytes(bitrateBps: number, frameIndex: number): number {
+function frameBytes(bitrateBps: number, frameIndex: number, keyframeShare = KEYFRAME_SHARE): number {
   const gopBytes = bitrateBps * (GOP_FRAMES / FPS) / 8;
   return Math.round(frameIndex % GOP_FRAMES === 0
-    ? gopBytes * KEYFRAME_SHARE
+    ? gopBytes * keyframeShare
     : gopBytes * (1 - KEYFRAME_SHARE) / (GOP_FRAMES - 1));
 }
 
@@ -121,6 +121,8 @@ interface JoiningFetch {
   started: boolean;
   /** Draft 22: a fill on the SUBSCRIBE rather than a FETCH of its own. */
   readonly fill?: boolean;
+  /** A standalone FETCH whose Objects go to its own receiver. */
+  readonly receiver?: { onObject(o: MoqtObject, c: unknown): void; onClosed?(t: string, c: unknown): void };
 }
 
 /**
@@ -152,6 +154,12 @@ class SourcePacedRelay {
   readonly joiningFetches: { atUs: number; requestId: bigint; options: any }[] = [];
   /** Draft 22: every fill served on a SUBSCRIBE. */
   readonly fills: { atUs: number; requestId: bigint; startGroup: bigint }[] = [];
+  /** Every standalone FETCH the player sent, in order. */
+  readonly standaloneFetches: { atUs: number; requestId: bigint; trackName: string; options: any }[] = [];
+  /** How the relay answers a standalone FETCH. */
+  standaloneFetchMode: 'serve' | 'refuse' = 'serve';
+  /** Keyframe share of each group's bytes; low-bitrate encodes run far above 0.2. */
+  keyframeShare = KEYFRAME_SHARE;
   congestedUntilUs = Infinity;
   private readonly fetches: JoiningFetch[] = [];
   private readonly cancelledFetches = new Set<bigint>();
@@ -214,7 +222,32 @@ class SourcePacedRelay {
         const sub = relay.subs.get(BigInt(id));
         if (sub) sub.active = false;
       }),
-      fetch: vi.fn(async () => varint(relay.allocateRequestId())),
+      // Standalone FETCH: a cached range of any track, served like a Joining
+      // FETCH (all frames released at once, at the request's priority).
+      fetch: vi.fn(async (_ns: Uint8Array[], name: Uint8Array, opts?: any) => {
+        if (relay.closed) { relay.rejectedAfterClose++; throw new Error('Cannot fetch in state closed; session must be ESTABLISHED'); }
+        const requestId = relay.allocateRequestId();
+        opts?.onRequestId?.(requestId);
+        const trackName = new TextDecoder().decode(name);
+        relay.standaloneFetches.push({ atUs: relay.nowUs, requestId, trackName, options: opts });
+        if (!opts?.receiver) return varint(requestId);
+        if (relay.standaloneFetchMode === 'refuse') throw new Error('REQUEST_ERROR NOT_SUPPORTED');
+        const largest = Math.floor(relay.nowUs / FRAME_US);
+        const first = Number(opts.startGroup) * GOP_FRAMES + Number(opts.startObject ?? 0n);
+        const endGroup = Number(opts.endGroup ?? 0n), endObject = Number(opts.endObject ?? 0n);
+        const last = Math.min(largest, endObject === 0 ? (endGroup + 1) * GOP_FRAMES - 1 : endGroup * GOP_FRAMES + endObject - 1);
+        if (first > last) throw new Error('REQUEST_ERROR INVALID_RANGE');
+        const sub: Subscription = {
+          requestId, alias: 0n, trackName, startGroup: BigInt(opts.startGroup), nextFrame: first, acked: true, ackAtUs: relay.nowUs,
+          joiningFrame: last, active: true, paused: false, priority: Number(opts.subscriberPriority ?? 128),
+        };
+        relay.fetches.push({
+          requestId, streamId: requestId * 1_000_000n + 999_999n, sub, nextFrame: first, lastFrame: last,
+          releaseAtUs: relay.nowUs + 2 * PATH_DELAY_US, priority: Number(opts.subscriberPriority ?? 128), started: false,
+          receiver: opts.receiver,
+        });
+        return varint(requestId);
+      }),
       // Absolute Joining FETCH (draft-18 §10.12.2): the subscription's groups
       // from Joining Start up to its Joining Location, served from cache.
       joiningFetch: vi.fn(async (opts: any) => {
@@ -345,7 +378,7 @@ class SourcePacedRelay {
     const rung = (name: string) => LADDER.find(r => r.name === name)!;
     const released: Array<{ sub: Subscription; frameIndex: number; releaseUs: number; fetch?: JoiningFetch }> = [...due, ...fetched];
     for (const d of released.sort((a, b) => a.releaseUs - b.releaseUs)) {
-      const bytes = Math.round(frameBytes(rung(d.sub.trackName).bitrateBps, d.frameIndex) * this.contentScale);
+      const bytes = Math.round(frameBytes(rung(d.sub.trackName).bitrateBps, d.frameIndex, this.keyframeShare) * this.contentScale);
       this.queued.push({ sub: d.sub, frameIndex: d.frameIndex, bytes, releaseUs: d.releaseUs,
         ...(d.fetch !== undefined ? { fetch: d.fetch } : {}) });
     }
@@ -363,6 +396,16 @@ class SourcePacedRelay {
       const groupId = BigInt(Math.floor(f.frameIndex / GOP_FRAMES));
       const objectId = f.frameIndex % GOP_FRAMES;
       const streamId = f.fetch ? f.fetch.streamId : f.sub.requestId * 1_000_000n + groupId;
+      if (f.fetch?.receiver) {
+        const context = { requestId: f.fetch.requestId, streamId: f.fetch.streamId, signal: new AbortController().signal };
+        f.fetch.started = true;
+        f.fetch.receiver.onObject({
+          kind: 'data', trackAlias: 0n, groupId, subgroupId: 0n, objectId: BigInt(objectId),
+          publisherPriority: undefined, payload: new Uint8Array(f.bytes),
+        } as MoqtObject, context);
+        if (f.frameIndex === f.fetch.lastFrame) f.fetch.receiver.onClosed?.('fin', context);
+        continue;
+      }
       if (f.fetch && !f.fetch.started) {
         f.fetch.started = true;
         this.adapter.onDataStream?.(streamId, {
@@ -457,6 +500,10 @@ interface Scenario {
   readonly relayPriority?: boolean;
   /** The relay drops the session at this time (µs). */
   readonly closeAtUs?: number;
+  /** How the relay answers a standalone FETCH (default 'serve'). */
+  readonly standaloneFetch?: 'serve' | 'refuse';
+  /** Keyframe share of each group's bytes (default 0.2). */
+  readonly keyframeShare?: number;
   /**
    * CMAF: a readable CMAF Header in the catalog (default), or opaque bytes —
    * a header the player cannot parse, which leaves it no delivery-lag signal.
@@ -486,6 +533,8 @@ interface Run {
   /** Joining FETCHes the player sent. */
   readonly joiningFetches: SourcePacedRelay['joiningFetches'];
   readonly fills: SourcePacedRelay['fills'];
+  readonly standaloneFetches: SourcePacedRelay['standaloneFetches'];
+  readonly probes: readonly { atUs: number; result: string; estimateKbps: number | null; upshift: boolean }[];
   readonly errors: readonly PlayerError[];
   readonly lastDeliveryUs: ReadonlyMap<string, number>;
   readonly recoveryReservations: number;
@@ -497,6 +546,17 @@ async function flushMicrotasks(): Promise<void> {
   for (let i = 0; i < 20; i++) await Promise.resolve();
 }
 
+/**
+ * Whether scenarios probe for upshift unless their config says otherwise.
+ * Suites that pin downshift mechanics turn it off: an upshift on their
+ * ample-link controls would change what they measure.
+ */
+let probeByDefault = true;
+function withoutProbing(): void {
+  beforeAll(() => { probeByDefault = false; });
+  afterAll(() => { probeByDefault = true; });
+}
+
 async function runScenario(s: Scenario): Promise<Run> {
   // The player's own timers (switch deadlines, retry delays) run on simulated
   // time, advanced with the clock; otherwise a 60 s run would finish before
@@ -505,6 +565,8 @@ async function runScenario(s: Scenario): Promise<Run> {
   const relay = new SourcePacedRelay(s.capacityBps, catalogJson(s.packaging, s.cmafHeader), s.packaging, s.contentScale, s.captureTimestamps,
     s.relayPriority, s.joiningFetch, s.draft);
   relay.congestedUntilUs = s.congestedUntilUs ?? Infinity;
+  relay.standaloneFetchMode = s.standaloneFetch ?? 'serve';
+  relay.keyframeShare = s.keyframeShare ?? KEYFRAME_SHARE;
   let clockUs = 0;
   let firstVideoUs: number | null = null;
   const clock = { now: () => clockUs };
@@ -556,6 +618,7 @@ async function runScenario(s: Scenario): Promise<Run> {
     draftVersion: s.draft ?? 16,
     livenessTimeoutMs: 0, // This model advances media time, not the wall-clock liveness monitor.
     clock,
+    abrUpshiftProbe: probeByDefault,
     ...s.playerConfig,
     ...(s.startLevel !== undefined ? { startLevel: s.startLevel } : {}),
     ...(s.packaging === 'loc'
@@ -572,6 +635,8 @@ async function runScenario(s: Scenario): Promise<Run> {
     subscribedTrack(mediaType: 'video'): { name: string } | undefined;
   };
 
+  const probes: Array<{ atUs: number; result: string; estimateKbps: number | null; upshift: boolean }> = [];
+  player.on('abr_probe', e => probes.push({ atUs: clockUs, result: e.result, estimateKbps: e.estimateKbps, upshift: e.upshift }));
   const errors: PlayerError[] = [];
   player.on('error', event => { errors.push(event.error); });
   const lastDeliveryUs = new Map<string, number>();
@@ -647,6 +712,8 @@ async function runScenario(s: Scenario): Promise<Run> {
       updates: relay.updates,
       rejectedAfterClose: relay.rejectedAfterClose,
       joiningFetches: relay.joiningFetches,
+      standaloneFetches: relay.standaloneFetches,
+      probes,
       fills: relay.fills,
     };
   } finally {
@@ -696,7 +763,7 @@ describe('ABR under source-paced live delivery', () => {
     it('CMAF: with a correct estimate, a thin low-latency buffer on an ample link holds its rung', async () => {
       const run = await runScenario({
         packaging: 'cmaf', capacityBps: AMPLE_BPS, durationUs: SECONDS(60),
-        bufferAheadUs: LL_BUFFER, oracleEstimate: true,
+        bufferAheadUs: LL_BUFFER, oracleEstimate: true, playerConfig: { abrUpshiftProbe: false },
       });
       expect(run.switches).toEqual([]);
       expect(run.finalTrack).toBe(START);
@@ -709,7 +776,7 @@ describe('ABR under source-paced live delivery', () => {
       ['v800 on a 1 Mbps link (80% utilised)', { capacityBps: 1_000_000, startLevel: 3 }],
     ] as const)('LOC: no downshift for %s', async (_label, sc) => {
       const run = await runScenario({ packaging: 'loc', durationUs: SECONDS(60), ...sc });
-      expect(run.switches).toEqual([]);
+      expect(run.switches.filter(sw => rungIndex(sw.to) > rungIndex(sw.from))).toEqual([]);
       expect(run.stallsAtUs).toEqual([]);
     });
 
@@ -734,6 +801,7 @@ describe('ABR under source-paced live delivery', () => {
       // A healthy buffer, so the player stays on v1500 and only measures.
       const run = await runScenario({
         packaging: 'cmaf', capacityBps: AMPLE_BPS, durationUs: SECONDS(30), bufferAheadUs: () => 2_000_000,
+        playerConfig: { abrUpshiftProbe: false },
       });
       expect(run.finalTrack).toBe(START);
       // The estimate includes keyframes as well as smaller P-frames.
@@ -744,6 +812,7 @@ describe('ABR under source-paced live delivery', () => {
   // Switching under congestion: request a lower rung while keeping the
   // outgoing subscription available as a fallback, even if the switch fails.
   describe('switching under congestion', () => {
+    withoutProbing();
     const switchSubscribes = (run: Run) => run.subscribes.filter(sub => sub.trackName.startsWith('v')).slice(1);
 
     it.each([14, 16, 18, 22] as const)('draft %s requests a downshift while keeping the outgoing subscription forwarding', async draft => {
@@ -844,17 +913,121 @@ describe('ABR under source-paced live delivery', () => {
       // Today: exactly the 1500 kbps being sent, against 30 000 kbps available.
       expect(run.estimateKbps).toBeGreaterThan(AMPLE_BPS / 1000 / 2);
     });
+  });
 
-    it.fails('#1 upshift: LOC climbs above the start rung on an ample link', async () => {
-      const run = await runScenario({ packaging: 'loc', capacityBps: AMPLE_BPS, durationUs: SECONDS(60) });
-      // Today: no switch at all — `bw > 2.25 × next rung` cannot hold when
-      // bw is the current rung's own bitrate.
-      expect(rungIndex(run.finalTrack)).toBeLessThan(rungIndex(START));
+  // Upshift by probing: a low-priority FETCH of the playing rung's newest
+  // complete group shows spare capacity the source-paced live rate cannot.
+  describe('upshift probing', () => {
+    const downs = (run: Run) => run.switches.filter(sw => rungIndex(sw.to) > rungIndex(sw.from));
+
+    it.each([14, 16, 18, 22] as const)('draft %i: LOC and CMAF climb to the top rung on an ample link', async draft => {
+      for (const packaging of ['loc', 'cmaf'] as const) {
+        const run = await runScenario({ packaging, draft, capacityBps: AMPLE_BPS, durationUs: SECONDS(40), bufferAheadUs: LL_BUFFER });
+        expect.soft(run.switches.map(sw => sw.to), packaging).toEqual(['v3000', 'v6000']);
+        expect.soft(run.switches[0]?.atUs ?? Infinity, packaging).toBeLessThan(SECONDS(8));
+        expect.soft(run.stallsAtUs, packaging).toEqual([]);
+        expect.soft(run.failedSwitches, packaging).toEqual([]);
+        expect.soft(run.errors.filter(error => error.severity === 'fatal'), packaging).toEqual([]);
+        // Each probe asked for the playing rung at the lowest priority, after the keyframe.
+        for (const fetch of run.standaloneFetches) {
+          expect.soft(fetch.options.subscriberPriority).toBe(255n);
+          expect.soft(fetch.options.startObject).toBe(1n);
+        }
+      }
+    });
+
+    it('steps up only as far as the link allows (5 Mbps: v3000, not v6000)', async () => {
+      const run = await runScenario({ packaging: 'loc', capacityBps: 5_000_000, durationUs: SECONDS(90) });
+      expect(run.switches.map(sw => sw.to)).toEqual(['v3000']);
+      expect(run.stallsAtUs).toEqual([]);
+      expect(run.probes.filter(p => p.upshift)).toHaveLength(1);
+    });
+
+    it('holds below the headroom (v1500 on 2.5 Mbps) and backs off', async () => {
+      const run = await runScenario({ packaging: 'loc', capacityBps: 2_500_000, durationUs: SECONDS(90) });
+      expect(run.switches).toEqual([]);
+      expect(run.stallsAtUs).toEqual([]);
+      // 10 s, 20 s, 40 s backoff after the first probe at ~3 s.
+      expect(run.probes.length).toBeGreaterThan(0);
+      expect(run.probes.length).toBeLessThanOrEqual(4);
+      expect(run.probes.every(p => !p.upshift)).toBe(true);
+    });
+
+    it('an empty MSE reading just after a probe upshift does not cascade downshifts', async () => {
+      // CMAF upshifts to v3000 at ~5.5 s on this link; MSE then reads empty for
+      // a second while the new rung's media lands, with no stall reported.
+      const run = await runScenario({ packaging: 'cmaf', capacityBps: AMPLE_BPS, durationUs: SECONDS(20),
+        bufferAheadUs: now => now > 5_600_000 && now < 6_600_000 ? 0 : 300_000 });
+      expect(run.switches[0]?.to).toBe('v3000');
+      expect(run.switches.filter(sw => rungIndex(sw.to) > rungIndex(sw.from))).toEqual([]);
+    });
+
+    it('climbs from the bottom rung: a small partial group still proves capacity', async () => {
+      // VBR content at 40% of nominal: a probe range of ~10-20 kB, as on a
+      // short-GOP bottom rung.
+      const run = await runScenario({ packaging: 'loc', capacityBps: AMPLE_BPS, durationUs: SECONDS(40), startLevel: 4, contentScale: 0.4 });
+      expect(run.switches[0]).toMatchObject({ from: 'v400', to: 'v800' });
+      expect(run.stallsAtUs).toEqual([]);
+    });
+
+    // A sub-360p bottom rung as low-bitrate encoders produce it: half of each
+    // group in the keyframe (which a probe skips), at 40% of nominal (~160 kb/s).
+    const lowRung = { packaging: 'loc' as const, startLevel: 4, contentScale: 0.4, keyframeShare: 0.5, durationUs: SECONDS(40) };
+
+    it('a sub-360p bottom rung with a heavy keyframe still climbs on an ample link', async () => {
+      const run = await runScenario({ ...lowRung, capacityBps: AMPLE_BPS });
+      expect(run.switches[0]).toMatchObject({ from: 'v400', to: 'v800' });
+      expect(run.switches[0]!.atUs).toBeLessThan(SECONDS(15));
+      expect(run.stallsAtUs).toEqual([]);
+    });
+
+    it('a sub-360p bottom rung holds on a link that cannot carry the next rung', async () => {
+      // The step is judged on v800's catalogued 800 kb/s: 1.3x needs 1040 kb/s.
+      const run = await runScenario({ ...lowRung, capacityBps: 400_000 });
+      expect(run.switches).toEqual([]);
+      expect(run.stallsAtUs).toEqual([]);
+    });
+
+    it('a relay that refuses the probe FETCH leaves playback alone', async () => {
+      const run = await runScenario({ packaging: 'loc', capacityBps: AMPLE_BPS, durationUs: SECONDS(60), standaloneFetch: 'refuse' });
+      expect(run.switches).toEqual([]);
+      expect(run.stallsAtUs).toEqual([]);
+      expect(run.errors).toEqual([]);
+      expect(run.probes.every(p => p.result === 'failed')).toBe(true);
+      expect(run.probes.length).toBeLessThanOrEqual(3);
+    });
+
+    it('after congestion clears, probes climb back without a stall', async () => {
+      const run = await runScenario({ packaging: 'loc', capacityBps: 700_000, congestedUntilUs: SECONDS(20), durationUs: SECONDS(90) });
+      const firstUp = run.switches.findIndex(sw => rungIndex(sw.to) < rungIndex(sw.from));
+      expect(downs(run).length).toBeGreaterThan(0);
+      expect(firstUp).toBeGreaterThan(-1);
+      expect(run.switches[firstUp]!.atUs).toBeGreaterThan(SECONDS(20));
+      expect(run.stallsAtUs.filter(at => at > run.switches[firstUp]!.atUs)).toEqual([]);
+    });
+
+    it('a relay that ignores priority: an early decision keeps a 60%-utilised link stall-free', async () => {
+      const run = await runScenario({ packaging: 'loc', capacityBps: 2_500_000, durationUs: SECONDS(60), relayPriority: false });
+      expect(run.switches).toEqual([]);
+      expect(run.stallsAtUs).toEqual([]);
+    });
+
+    // Known limitation: the probe relies on the relay sending it below live
+    // media. A relay that sends in arrival order holds live media behind up to
+    // `decideByUs` of probe, and at 91% utilisation the 9% headroom cannot
+    // drain that before playout needs it.
+    it('a relay that ignores priority on a near-saturated link: at most one stall per probe cycle', async () => {
+      const run = await runScenario({ packaging: 'loc', capacityBps: 1_650_000, durationUs: SECONDS(60), relayPriority: false });
+      expect(run.stallsAtUs.length).toBeLessThanOrEqual(1);
+      expect(run.errors.filter(error => error.severity === 'fatal')).toEqual([]);
     });
   });
 });
 
 describe('LOC latency give-back after real simulated congestion', () => {
+  // A probe-led upshift re-joins at the live edge, which would hide the
+  // disabled control's standing latency.
+  withoutProbing();
   it.each([14, 16, 18, 22] as const)('recovers on draft %i, with disabled and ample controls', async draft => {
     const scenario = { draft, packaging: 'loc' as const, capacityBps: 700_000,
       congestedUntilUs: SECONDS(30), durationUs: SECONDS(70) };

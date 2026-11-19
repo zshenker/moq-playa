@@ -514,6 +514,11 @@ export interface FetchOptions extends AuthorizationOptions {
   endGroup?: bigint;
   endObject?: bigint;
   /**
+   * SUBSCRIBER_PRIORITY (0-255, lower is higher priority). Omitted, the
+   * parameter is not sent and the publisher uses its default of 128.
+   */
+  subscriberPriority?: Varint;
+  /**
    * Requested Group Order (§9.2.2.4 / §10.2). Sets the GROUP_ORDER (0x22)
    * parameter (Ascending = 0x1, Descending = 0x2). When omitted, the parameter
    * is not sent and the response is decoded as Ascending per spec.
@@ -3826,6 +3831,12 @@ export class Session {
   ): RequestResult {
     this.assertEstablishedOrDraining('fetch');
     const parameters = authorizationParameters(options);
+    if (options.subscriberPriority !== undefined) {
+      if (options.subscriberPriority < 0n || options.subscriberPriority > 255n) {
+        throw new RangeError(`SUBSCRIBER_PRIORITY must be 0-255, got ${options.subscriberPriority}`);
+      }
+      parameters.set(MessageParam.SUBSCRIBER_PRIORITY, [options.subscriberPriority]);
+    }
 
     if (this._state === SessionState.DRAINING) {
       throw new SessionDrainingError(
@@ -3844,6 +3855,7 @@ export class Session {
       options.endObject,
       [...namespace, name].map(bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('')).join('/'),
     );
+    if (options.subscriberPriority !== undefined) fetchSm.currentPriority = options.subscriberPriority;
     this.fetches.set(requestId as bigint, fetchSm);
 
     // Build StandaloneFetch with proper Location fields per §9.16.1

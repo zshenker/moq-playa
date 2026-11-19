@@ -426,6 +426,15 @@ export interface QualityConfig {
    */
   readonly qualitySwitchCooldownMs?: number;
 
+  /**
+   * Probe for spare capacity before an automatic upshift. Live delivery is
+   * source-paced, so the receive rate of the playing rung cannot show
+   * headroom; a probe FETCHes the most recent cached groups of that rung at
+   * low priority and times their arrival. Default: false (experimental,
+   * opt in while it is being validated).
+   */
+  readonly abrUpshiftProbe?: boolean;
+
 
   /**
    * Constraints for initial video track selection from altGroup.
@@ -837,6 +846,7 @@ export const DEFAULT_PLAYER_CONFIG = {
   autoQuality: true,
   startLevel: 'auto' as const,
   qualitySwitchCooldownMs: 5_000,
+  abrUpshiftProbe: false,
 
   // Recovery
   maxConsecutiveGaps: 5,

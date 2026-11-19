@@ -466,7 +466,11 @@ try {
         }
       }
       const query = new URLSearchParams({ url: browserUrl, ns: namespace, hash: pin });
-      if (scenario.abrTrace) { query.set('abr', '1'); query.set('lang', scenario.lang); }
+      if (scenario.abrTrace) {
+        query.set('abr', '1'); query.set('lang', scenario.lang);
+        // The upshift probe is opt-in while it is validated.
+        if (process.env.PLAYER_ABR_PROBE === '1') query.set('probe', '1');
+      }
       if (scenario.tailMode) query.set('groupTail', scenario.tailMode);
       if (scenario.warm !== undefined) query.set('warm', scenario.warm ? '1' : '0');
       if (scenario.manualSwitch) {

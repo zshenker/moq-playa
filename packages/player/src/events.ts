@@ -476,6 +476,20 @@ export interface QualitySwitchFailedEvent {
 }
 
 /**
+ * An ABR capacity probe finished. `upshift` is true when its estimate
+ * justified stepping up to `targetTrackName`; the switch itself is reported
+ * by `quality_switching` / `quality_switched` as usual.
+ */
+export interface AbrProbeEvent {
+  readonly type: 'abr_probe';
+  readonly result: 'measured' | 'inconclusive' | 'failed';
+  /** Estimated link capacity (kbps): spare capacity plus the live rate. */
+  readonly estimateKbps: number | null;
+  readonly targetTrackName: string;
+  readonly upshift: boolean;
+}
+
+/**
  * Live catch-up state changed — activated, rate adjusted, or deactivated.
  *
  * Emitted when the player adjusts playback rate to catch up to the live
@@ -742,6 +756,7 @@ export interface PlayerEventMap {
   quality_switching: QualitySwitchingEvent;
   quality_switched: QualitySwitchedEvent;
   quality_switch_failed: QualitySwitchFailedEvent;
+  abr_probe: AbrProbeEvent;
   catch_up_changed: CatchUpChangedEvent;
 
   // Namespace discovery
