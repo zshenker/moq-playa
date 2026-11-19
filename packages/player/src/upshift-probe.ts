@@ -100,6 +100,13 @@ export interface UpshiftProbeOptions {
   readonly maxBackoffUs: number;
   /** Abandon a probe that has not finished in this long. */
   readonly timeoutUs: number;
+  /**
+   * A probe with no object by this long after its request found no spare
+   * capacity: on a full link a low-priority FETCH gets no turn at all.
+   * It fails then, rather than holding the delivery-lag signal off until
+   * `timeoutUs`.
+   */
+  readonly firstByteUs: number;
   readonly minBytes: number;
   readonly minDurationUs: number;
   /**
@@ -117,6 +124,8 @@ export const DEFAULT_UPSHIFT_PROBE_OPTIONS: UpshiftProbeOptions = {
   initialBackoffUs: 10_000_000,
   maxBackoffUs: 120_000_000,
   timeoutUs: 4_000_000,
+  // An unloaded path answers in about one round trip.
+  firstByteUs: 1_000_000,
   // A low rung's partial group can be only ~15 kB; a whole range arriving
   // inside minDurationUs is scored as a lower bound over that window.
   minBytes: 8_000,
@@ -215,6 +224,7 @@ export class UpshiftProbe {
     const state = this.inFlight;
     if (!state) return;
     state.meter.observeLive(bytes, this.clock.now());
+    this.expire();
     this.decideEarly();
   }
 
@@ -242,10 +252,14 @@ export class UpshiftProbe {
 
   private expire(): void {
     const state = this.inFlight;
-    if (state && this.clock.now() - state.startedUs > this.options.timeoutUs) {
-      this.finish({ kind: 'failed', reason: 'timed out' });
-      state.handle?.cancel();
-    }
+    if (!state) return;
+    const now = this.clock.now(), waitedUs = now - state.startedUs;
+    const reason = waitedUs > this.options.timeoutUs ? 'timed out'
+      : state.meter.elapsedUs(now) === null && waitedUs > this.options.firstByteUs
+        ? `no probe data within ${Math.round(this.options.firstByteUs / 1000)} ms` : null;
+    if (reason === null) return;
+    this.finish({ kind: 'failed', reason });
+    state.handle?.cancel();
   }
 
   private finish(result: ProbeResult): void {

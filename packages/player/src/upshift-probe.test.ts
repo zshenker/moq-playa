@@ -86,9 +86,34 @@ describe('UpshiftProbe', () => {
     expect(h.probe.due()).toBe(true);
   });
 
+  it('fails a probe that gets no data by firstByteUs, on the next live object', () => {
+    const h = harness();
+    const { firstByteUs } = DEFAULT_UPSHIFT_PROBE_OPTIONS;
+    h.start();
+    // A full link: live media keeps arriving, the low-priority FETCH gets no turn.
+    for (let t = 0; t + 33_000 <= firstByteUs; t += 33_000) { h.advance(33_000); h.probe.observeLive(5_000); }
+    expect(h.verdicts).toEqual([]);
+    h.advance(33_000); h.probe.observeLive(5_000);
+    expect(h.verdicts[0]).toMatchObject({ upshift: false,
+      result: { kind: 'failed', reason: `no probe data within ${firstByteUs / 1000} ms` } });
+    expect(h.cancels()).toBe(1);
+    expect(h.probe.probing).toBe(false);
+    expect(h.probe.due()).toBe(false); // backed off
+  });
+
+  it('lets a probe whose first object arrives before firstByteUs run on', () => {
+    const h = harness();
+    h.start();
+    h.advance(DEFAULT_UPSHIFT_PROBE_OPTIONS.firstByteUs - 100_000);
+    h.arrive(1_000);
+    h.advance(200_000); h.probe.observeLive(5_000);
+    expect(h.probe.probing || h.verdicts[0]?.result.kind !== 'failed').toBe(true);
+  });
+
   it('times out a probe that never finishes', () => {
     const h = harness();
     h.start();
+    h.arrive(1_000); // started, then stalls
     h.advance(DEFAULT_UPSHIFT_PROBE_OPTIONS.timeoutUs + 1);
     expect(h.probe.due()).toBe(false);
     expect(h.verdicts[0]).toMatchObject({ upshift: false, result: { kind: 'failed', reason: 'timed out' } });
