@@ -10899,8 +10899,9 @@ export class MoqtPlayer {
     const ns = trackNamespaceFields(current, this.config.namespace).map(field => this.enc.encode(field));
     const name = this.enc.encode(current.name);
     const targetTrack = next;
-    this.log.info('ABR probe: FETCH %s group %s objects 1-%s to test for %s (%s kbps)', current.name,
-      String(request.startGroup), request.endObject === 0n ? 'end' : String(request.endObject - 1n), next.name, `${nextKbps}+${requiredKbps - nextKbps} audio`);
+    this.log.info('ABR probe: FETCH %s group %s (%s; live group %s, object %s) objects 1-%s to test for %s (%s kbps)', current.name,
+      String(request.startGroup), previous ? 'previous' : 'current', String(latest.group), String(latest.object),
+      request.endObject === 0n ? 'end' : String(request.endObject - 1n), next.name, `${nextKbps}+${requiredKbps - nextKbps} audio`);
     probe.start({
       request,
       requiredKbps,
