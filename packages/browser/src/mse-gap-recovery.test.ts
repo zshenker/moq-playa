@@ -521,9 +521,11 @@ it('an advancing video stall escalates only while frames stay flat', async () =>
 
 // Lab shape: the carry lasts only about 3 s, then the clock stops at
 // readyState 2. A deadline started during the carry continues into the
-// stopped freeze instead of restarting there. Near the live edge, the carry
-// runs under a second behind the newest video.
-it.each(['deep', 'live edge'] as const)('an advancing stall keeps its deadline when the clock stops (%s)', async mode => {
+// stopped freeze instead of restarting there: a due rung fires on the sample
+// where the clock stops, or (with thin coverage there) on the next frozen
+// sample. Near the live edge, the carry runs under a second behind the
+// newest video.
+it.each(['deep', 'live edge', 'thin at stop'] as const)('an advancing stall keeps its deadline when the clock stops (%s)', async mode => {
   const f = await ready(), rungs: number[] = [];
   f.adapter.onWedge = info => { rungs.push(info.rung); };
   const set = (videoEnd: number, audioEnd: number) => {
@@ -536,8 +538,9 @@ it.each(['deep', 'live edge'] as const)('an advancing stall keeps its deadline w
     edge(0.9); f.video.advancePlayback(0.9); f.video.frames += 30; await vi.advanceTimersByTimeAsync(1000);
     edge(2.1); f.video.advancePlayback(2.1); f.video.frames += 30; await vi.advanceTimersByTimeAsync(1000); // crossed
     edge(3.1); f.video.advancePlayback(3.1); await vi.advanceTimersByTimeAsync(1000); // first frameless sample
-    edge(3.3); f.video.advancePlayback(3.3); f.video.readyState = 2; await vi.advanceTimersByTimeAsync(1000);
-    expect(rungs).toEqual([]);
+    if (mode === 'thin at stop') set(3.6, 3.65); else edge(3.3);
+    f.video.advancePlayback(3.3); f.video.readyState = 2; await vi.advanceTimersByTimeAsync(1000);
+    expect(rungs).toEqual(mode === 'thin at stop' ? [] : [1]);
     set(14, 14); await vi.advanceTimersByTimeAsync(1000);
     expect(rungs).toEqual([1]); expect(f.video.seekCount).toBe(1); expect(f.jumps).toHaveLength(0);
   } finally { f.adapter.destroy(); }
