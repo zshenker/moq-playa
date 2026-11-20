@@ -516,6 +516,49 @@ it('an advancing video stall escalates only while frames stay flat', async () =>
   } finally { f.adapter.destroy(); }
 });
 
+// Lab shape: the carry lasts only about 3 s, then the clock stops at
+// readyState 2. A deadline started during the carry continues into the
+// stopped freeze instead of restarting there. Near the live edge, the carry
+// runs under a second behind the newest video.
+it.each(['deep', 'live edge'] as const)('an advancing stall keeps its deadline when the clock stops (%s)', async mode => {
+  const f = await ready(), rungs: number[] = [];
+  f.adapter.onWedge = info => { rungs.push(info.rung); };
+  const set = (videoEnd: number, audioEnd: number) => {
+    source.videoBuffer.buffered = makeTimeRanges([[0, 1], [2, videoEnd]]);
+    source.audioBuffer.buffered = makeTimeRanges([[0, audioEnd]]);
+    f.video.buffered = makeTimeRanges([[0, 1], [2, Math.min(videoEnd, audioEnd)]]);
+  };
+  const edge = (ct: number) => mode === 'deep' ? set(14, 14) : set(ct + 0.8, ct + 0.85);
+  try {
+    edge(0.9); f.video.advancePlayback(0.9); f.video.frames += 30; await vi.advanceTimersByTimeAsync(1000);
+    edge(2.1); f.video.advancePlayback(2.1); await vi.advanceTimersByTimeAsync(1000); // crossed; frames flat
+    edge(3.1); f.video.advancePlayback(3.1); await vi.advanceTimersByTimeAsync(1000);
+    edge(3.3); f.video.advancePlayback(3.3); f.video.readyState = 2; await vi.advanceTimersByTimeAsync(1000);
+    expect(rungs).toEqual([]);
+    set(14, 14); await vi.advanceTimersByTimeAsync(1000);
+    expect(rungs).toEqual([1]); expect(f.video.seekCount).toBe(1); expect(f.jumps).toHaveLength(0);
+  } finally { f.adapter.destroy(); }
+});
+
+// Lab shape: a later downshift leaves a second narrow video hole just under
+// a second past where the clock stopped. The capped range must not hold
+// recovery off for good.
+it('a frozen playhead before a later narrow hole still recovers', async () => {
+  const f = await ready(), rungs: number[] = [];
+  f.adapter.onWedge = info => { rungs.push(info.rung); };
+  source.videoBuffer.buffered = makeTimeRanges([[0, 1], [2, 4.5], [5, 14]]);
+  source.audioBuffer.buffered = makeTimeRanges([[0, 14]]);
+  f.video.buffered = makeTimeRanges([[0, 1], [2, 4.5], [5, 14]]);
+  try {
+    f.video.advancePlayback(0.9); f.video.frames += 30; await vi.advanceTimersByTimeAsync(1000);
+    f.video.advancePlayback(2.1); f.video.frames += 30; await vi.advanceTimersByTimeAsync(1000);
+    f.video.advancePlayback(3.508); f.video.readyState = 2;
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(rungs[0]).toBe(1); expect(f.video.seekCount).toBeGreaterThan(0);
+    expect(f.video.currentTime).toBeLessThan(4.5); expect(f.jumps).toHaveLength(0);
+  } finally { f.adapter.destroy(); }
+});
+
 // A switch commit can retype (a prefetched init is applied even for the same
 // codec) after the playhead has run past the old video but before the new
 // rendition's first range lands. The retype keeps the coded frames, so the
