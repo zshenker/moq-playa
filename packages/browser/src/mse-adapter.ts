@@ -796,6 +796,9 @@ export class MseMediaSource implements MediaSourceLike {
   /** Watchdog cadence; detection threshold per escalation rung. */
   private static readonly WEDGE_CHECK_INTERVAL_MS = 1_000;
   private static readonly WEDGE_FROZEN_MS = 2_500;
+  /** Minimum clock advance per sample for an advancing video stall: the
+   * clock must really be running (on audio), not creeping. */
+  private static readonly WEDGE_ADVANCING_MIN_SEC = 0.5;
   private wedgeTimer: ReturnType<typeof setInterval> | null = null;
   /** Last observed currentTime; ladder resets only on ORGANIC movement. */
   private wedgeLastTime: number | null = null;
@@ -3591,6 +3594,7 @@ export class MseMediaSource implements MediaSourceLike {
     const qualityReset = quality !== null && this.wedgeLastQuality !== null
       && (quality.totalVideoFrames < this.wedgeLastQuality.totalVideoFrames
         || quality.droppedVideoFrames < this.wedgeLastQuality.droppedVideoFrames);
+    const qualitySampled = quality !== null && this.wedgeLastQuality !== null;
     this.wedgeLastQuality = quality;
 
     if (qualityReset) {
@@ -3621,10 +3625,24 @@ export class MseMediaSource implements MediaSourceLike {
       // point. The upper range may arrive after playback left the lower one.
       if (quality !== null && !v.paused && !v.seeking && this.playbackIntent
           && v.error === null && !v.ended) this.rememberCoveredVideoPosition(ct);
+      const advancing = qualitySampled && !qualityMoved && from !== null
+        && this.isAdvancingVideoStall(from, ct, ownSeek);
+      if (this.destroyed || generation !== this.bufferGen) return;
       this.handleWatchdogSeeked();
       this.wedgeLastTime = ct;
-      this.wedgeFrozenSinceMs = null;
-      this.wedgeRung = 0;
+      if (!advancing) {
+        this.wedgeFrozenSinceMs = null;
+        this.wedgeRung = 0;
+        return;
+      }
+      // Video stopped at a crossed narrow hole while audio keeps the clock
+      // running. Chrome only stops the clock about 3 s later, so time the
+      // freeze from the first frameless post-hole sample instead.
+      if (this.hasPendingNativeWork()) return;
+      if (this.wedgeFrozenSinceMs === null) { this.wedgeFrozenSinceMs = nowMs; return; }
+      if (nowMs - this.wedgeFrozenSinceMs < MseMediaSource.WEDGE_FROZEN_MS || this.wedgeRung >= 4) return;
+      this.fireWedgeRung(nowMs, ct, quality!, this.wedgeVideoHole, false,
+        this.elementAheadSec(ct), ownSeek, generation);
       return;
     }
     this.wedgeVideoHole = this.observeVideoHole(ct, ct);
@@ -3655,16 +3673,7 @@ export class MseMediaSource implements MediaSourceLike {
     // not paused, not seeking, decodable data ready, media ahead of the
     // playhead within its containing range. Anything else is a normal
     // pause/buffer/seek state owned by the existing paths.
-    let aheadSec = 0;
-    try {
-      const buffered = v.buffered;
-      for (let i = 0; i < buffered.length; i++) {
-        if (ct >= buffered.start(i) && ct <= buffered.end(i)) {
-          aheadSec = buffered.end(i) - ct;
-          break;
-        }
-      }
-    } catch { /* detached element */ }
+    const aheadSec = this.elementAheadSec(ct);
     let postHole = false;
     if (this.gapJumpMs > 0 && hole !== null && quality !== null && ((v.readyState ?? 0) === 2 || wideHole)) {
       postHole = this.hasPostHoleCoverage(ct, wideHole);
@@ -3691,7 +3700,41 @@ export class MseMediaSource implements MediaSourceLike {
     if (this.wedgeRung >= 4) return; // exhausted — error already surfaced
     if (wideHole && nowMs - this.lastGapJumpAtMs < (this.wedgeRung === 0
         ? MseMediaSource.GAP_JUMP_MIN_INTERVAL_MS : MseMediaSource.GAP_WIDE_HOLE_FATAL_MS)) return;
+    this.fireWedgeRung(nowMs, ct, quality!, hole, wideHole, aheadSec, ownSeek, generation);
+  }
 
+  /** Buffered media ahead of `ct` in the element's containing range. */
+  private elementAheadSec(ct: number): number {
+    try {
+      const buffered = this.video.buffered;
+      for (let i = 0; i < buffered.length; i++) {
+        if (ct >= buffered.start(i) && ct <= buffered.end(i)) return buffered.end(i) - ct;
+      }
+    } catch { /* detached element */ }
+    return 0;
+  }
+
+  /**
+   * Video frames stopped after a witnessed narrow hole while the clock keeps
+   * advancing on audio, inside buffered video and audio, at readyState ≥ 3.
+   * Chrome keeps the clock running like this for about 3 s before it stops at
+   * readyState 2. A hidden document is excluded: browsers may legitimately
+   * stop decoding background video while audio plays.
+   */
+  private isAdvancingVideoStall(from: number, ct: number, ownSeek: boolean): boolean {
+    const v = this.video, hole = this.wedgeVideoHole;
+    if (hole === null || hole.start - hole.end > MseMediaSource.GAP_JUMP_MAX_HOLE_SEC || from < hole.start
+        || ct - from < MseMediaSource.WEDGE_ADVANCING_MIN_SEC) return false;
+    if (v.paused || (v.seeking && !ownSeek) || !this.playbackIntent || v.error !== null || v.ended
+        || (v.readyState ?? 0) < 3) return false;
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
+    return this.hasPostHoleCoverage(ct, true) && this.elementAheadSec(ct) > 1;
+  }
+
+  private fireWedgeRung(nowMs: number, ct: number, quality: Readonly<VideoPlaybackQualityStats>,
+      hole: typeof this.wedgeVideoHole, wideHole: boolean, aheadSec: number, ownSeek: boolean,
+      generation: number): void {
+    const v = this.video;
     const rung = wideHole && this.wedgeRung > 0 ? 4 : this.wedgeRung + 1;
     if (!wideHole) this.wedgeRung = rung;
 

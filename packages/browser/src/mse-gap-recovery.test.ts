@@ -466,6 +466,56 @@ it('a narrow post-hole witness survives a frozen sample with thin forward video'
   } finally { f.adapter.destroy(); }
 });
 
+// After a narrow video-only hole, Chrome keeps the clock running on audio at
+// readyState 4 for about 3 s with video frames flat, before it stops at
+// readyState 2. The freeze is timed from the first frameless post-hole sample.
+type AdvancingMode = 'stall' | 'frames' | 'hidden' | 'continuous' | 'wide' | 'creeping';
+it.each(['stall', 'frames', 'hidden', 'continuous', 'wide', 'creeping'] as AdvancingMode[])(
+  'an advancing clock with flat video frames after a crossed narrow hole: %s', async mode => {
+    const f = await ready(), rungs: number[] = [];
+    f.adapter.onWedge = info => { rungs.push(info.rung); };
+    if (mode === 'hidden') vi.stubGlobal('document', { visibilityState: 'hidden' });
+    const lowerEnd = mode === 'continuous' ? 2 : 1, upperStart = mode === 'wide' ? 3.5 : 2;
+    source.videoBuffer.buffered = makeTimeRanges(mode === 'continuous' ? [[0, 14]] : [[0, lowerEnd], [upperStart, 14]]);
+    source.audioBuffer.buffered = makeTimeRanges([[0, 14]]);
+    f.video.buffered = makeTimeRanges(mode === 'continuous' ? [[0, 14]] : [[0, lowerEnd], [upperStart, 14]]);
+    try {
+      f.video.advancePlayback(0.9); await vi.advanceTimersByTimeAsync(1000);
+      let ct = mode === 'wide' ? 3.6 : 2.1;
+      for (let i = 0; i < 5; i++) {
+        f.video.advancePlayback(ct); if (mode === 'frames') f.video.frames += 30;
+        await vi.advanceTimersByTimeAsync(1000);
+        ct += mode === 'creeping' ? 0.2 : 1;
+      }
+      if (mode === 'stall') {
+        expect(rungs).toEqual([1]);
+        expect(f.video.seekCount).toBe(1);
+      } else {
+        expect(rungs).toEqual([]); expect(f.video.seekCount).toBe(0);
+      }
+      expect(f.jumps).toHaveLength(0);
+    } finally { f.adapter.destroy(); }
+  });
+
+it('an advancing video stall escalates only while frames stay flat', async () => {
+  const f = await ready(), rungs: number[] = [];
+  f.adapter.onWedge = info => { rungs.push(info.rung); };
+  source.videoBuffer.buffered = makeTimeRanges([[0, 1], [2, 30]]);
+  source.audioBuffer.buffered = makeTimeRanges([[0, 30]]);
+  f.video.buffered = makeTimeRanges([[0, 1], [2, 30]]);
+  try {
+    f.video.advancePlayback(0.9); await vi.advanceTimersByTimeAsync(1000);
+    let ct = 2.1;
+    for (let i = 0; i < 5; i++) { f.video.advancePlayback(ct); ct += 1; await vi.advanceTimersByTimeAsync(1000); }
+    expect(rungs).toEqual([1]);
+    // The nudge restarts video: frames advance and the episode resets.
+    for (let i = 0; i < 6; i++) {
+      f.video.advancePlayback(ct); ct += 1; f.video.frames += 30; await vi.advanceTimersByTimeAsync(1000);
+    }
+    expect(rungs).toEqual([1]); expect(f.video.seekCount).toBe(1);
+  } finally { f.adapter.destroy(); }
+});
+
 // A switch commit can retype (a prefetched init is applied even for the same
 // codec) after the playhead has run past the old video but before the new
 // rendition's first range lands. The retype keeps the coded frames, so the
