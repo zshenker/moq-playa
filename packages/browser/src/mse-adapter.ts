@@ -801,8 +801,14 @@ export class MseMediaSource implements MediaSourceLike {
   private static readonly WEDGE_ADVANCING_MIN_SEC = 0.5;
   /** Room a rung-1 nudge needs inside the containing range. */
   private static readonly WEDGE_NUDGE_ROOM_SEC = 0.15;
+  /** Rung-1 deadline for an advancing video stall: the second consecutive
+   * frameless post-hole sample (one check interval, less timer jitter). */
+  private static readonly WEDGE_ADVANCING_FROZEN_MS = 900;
+  /** Delay before retrying a due rung that native work held off. */
+  private static readonly WEDGE_RETRY_MS = 150;
   /** The current episode began as an advancing video stall. */
   private wedgeAdvancingStall = false;
+  private wedgeRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private wedgeTimer: ReturnType<typeof setInterval> | null = null;
   /** Last observed currentTime; ladder resets only on ORGANIC movement. */
   private wedgeLastTime: number | null = null;
@@ -2272,6 +2278,7 @@ export class MseMediaSource implements MediaSourceLike {
       clearInterval(this.wedgeTimer);
       this.wedgeTimer = null;
     }
+    if (this.wedgeRetryTimer !== null) { clearTimeout(this.wedgeRetryTimer); this.wedgeRetryTimer = null; }
     this.onWedge = null;
     this.onGapJump = null;
     this.video.removeEventListener('playing', this.handlePlaying);
@@ -3630,9 +3637,9 @@ export class MseMediaSource implements MediaSourceLike {
       // running. Chrome only stops the clock about 3 s later, so time the
       // freeze from the first frameless post-hole sample instead.
       this.wedgeAdvancingStall = true;
-      if (this.hasPendingNativeWork()) return;
+      if (this.hasPendingNativeWork()) { this.scheduleWedgeRetry(); return; }
       if (this.wedgeFrozenSinceMs === null) { this.wedgeFrozenSinceMs = nowMs; return; }
-      if (nowMs - this.wedgeFrozenSinceMs < MseMediaSource.WEDGE_FROZEN_MS || this.wedgeRung >= 4) return;
+      if (nowMs - this.wedgeFrozenSinceMs < this.wedgeDeadlineMs() || this.wedgeRung >= 4) return;
       this.fireWedgeRung(nowMs, ct, quality!, this.wedgeVideoHole, false,
         this.elementAheadSec(ct), ownSeek, generation);
       return;
@@ -3650,6 +3657,7 @@ export class MseMediaSource implements MediaSourceLike {
     // not repair a witnessed video hole: revalidate the actual buffers/ranges
     // and continue sampling clock/quality progress through the pending period.
     if (this.hasPendingNativeWork()) {
+      this.scheduleWedgeRetry();
       this.wedgeFrozenSinceMs = null;
       this.handleWatchdogSeeked();
       return;
@@ -3692,11 +3700,53 @@ export class MseMediaSource implements MediaSourceLike {
       this.wedgeFrozenSinceMs = nowMs;
       return;
     }
-    if (nowMs - this.wedgeFrozenSinceMs < MseMediaSource.WEDGE_FROZEN_MS) return;
+    if (nowMs - this.wedgeFrozenSinceMs < this.wedgeDeadlineMs()) return;
     if (this.wedgeRung >= 4) return; // exhausted — error already surfaced
     if (wideHole && nowMs - this.lastGapJumpAtMs < (this.wedgeRung === 0
         ? MseMediaSource.GAP_JUMP_MIN_INTERVAL_MS : MseMediaSource.GAP_WIDE_HOLE_FATAL_MS)) return;
     this.fireWedgeRung(nowMs, ct, quality!, hole, wideHole, aheadSec, ownSeek, generation);
+  }
+
+  /** An advancing stall's first rung fires on its second frameless sample;
+   * every other rung waits the normal freeze deadline. */
+  private wedgeDeadlineMs(): number {
+    return this.wedgeAdvancingStall && this.wedgeRung === 0
+      ? MseMediaSource.WEDGE_ADVANCING_FROZEN_MS : MseMediaSource.WEDGE_FROZEN_MS;
+  }
+
+  private scheduleWedgeRetry(): void {
+    if (this.wedgeRetryTimer !== null || this.destroyed) return;
+    this.wedgeRetryTimer = setTimeout(() => {
+      this.wedgeRetryTimer = null;
+      this.retryDueWedge(performance.now());
+    }, MseMediaSource.WEDGE_RETRY_MS);
+  }
+
+  /**
+   * A due rung for a narrow post-hole episode that in-flight native work held
+   * off is retried shortly after, instead of on the next one-second check.
+   * Not a sample: it revalidates the episode (frames still flat since the last
+   * check, the same hole, forward coverage, nudge room) and only then acts.
+   */
+  private retryDueWedge(nowMs: number): void {
+    if (this.destroyed || !this.playTriggered || this.wedgeFrozenSinceMs === null || this.wedgeRung >= 4
+        || nowMs - this.wedgeFrozenSinceMs < this.wedgeDeadlineMs()) return;
+    const hole = this.wedgeVideoHole;
+    if (hole === null || hole.start - hole.end > MseMediaSource.GAP_JUMP_MAX_HOLE_SEC) return;
+    if (this.hasPendingNativeWork()) { this.scheduleWedgeRetry(); return; }
+    const v = this.video, ct = v.currentTime, generation = this.bufferGen;
+    const quality = this.getVideoPlaybackQuality(), last = this.wedgeLastQuality;
+    if (this.destroyed || generation !== this.bufferGen || quality === null || last === null
+        || quality.totalVideoFrames !== last.totalVideoFrames
+        || quality.droppedVideoFrames !== last.droppedVideoFrames) return;
+    if (v.paused || v.seeking || !this.playbackIntent || v.error !== null || v.ended || (v.readyState ?? 0) < 2
+        || (this.wedgeLastTime !== null && ct < this.wedgeLastTime)) return;
+    const min = this.wedgeAdvancingStall ? MseMediaSource.WEDGE_ADVANCING_MIN_SEC : 1;
+    const aheadSec = this.elementAheadSec(ct);
+    if (!this.hasPostHoleCoverage(ct, true, min) || aheadSec <= MseMediaSource.WEDGE_NUDGE_ROOM_SEC
+        || this.elementAheadSec(ct, true) <= min) return;
+    this.wedgeLastTime = ct;
+    this.fireWedgeRung(nowMs, ct, quality, hole, false, aheadSec, false, generation);
   }
 
   /** Buffered media ahead of `ct` in the element's containing range; with
