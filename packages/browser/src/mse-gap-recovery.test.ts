@@ -468,7 +468,8 @@ it('a narrow post-hole witness survives a frozen sample with thin forward video'
 
 // After a narrow video-only hole, Chrome keeps the clock running on audio at
 // readyState 4 for about 3 s with video frames flat, before it stops at
-// readyState 2. The freeze is timed from the first frameless post-hole sample.
+// readyState 2. The freeze is timed from the first frameless post-hole
+// sample, and rung 1 fires on the second.
 type AdvancingMode = 'stall' | 'frames' | 'hidden' | 'continuous' | 'wide' | 'creeping';
 it.each(['stall', 'frames', 'hidden', 'continuous', 'wide', 'creeping'] as AdvancingMode[])(
   'an advancing clock with flat video frames after a crossed narrow hole: %s', async mode => {
@@ -481,15 +482,17 @@ it.each(['stall', 'frames', 'hidden', 'continuous', 'wide', 'creeping'] as Advan
     f.video.buffered = makeTimeRanges(mode === 'continuous' ? [[0, 14]] : [[0, lowerEnd], [upperStart, 14]]);
     try {
       f.video.advancePlayback(0.9); await vi.advanceTimersByTimeAsync(1000);
-      let ct = mode === 'wide' ? 3.6 : 2.1;
+      let ct = mode === 'wide' ? 3.6 : 2.1, firedAt = -1;
       for (let i = 0; i < 5; i++) {
         f.video.advancePlayback(ct); if (mode === 'frames') f.video.frames += 30;
         await vi.advanceTimersByTimeAsync(1000);
+        if (firedAt < 0 && rungs.length > 0) firedAt = i;
         ct += mode === 'creeping' ? 0.2 : 1;
       }
       if (mode === 'stall') {
-        expect(rungs).toEqual([1]);
-        expect(f.video.seekCount).toBe(1);
+        expect(firedAt).toBe(1); expect(rungs[0]).toBe(1);
+        // Rung 2 still waits the normal deadline after rung 1.
+        expect(rungs).toEqual([1, 2]);
       } else {
         expect(rungs).toEqual([]); expect(f.video.seekCount).toBe(0);
       }
@@ -506,7 +509,7 @@ it('an advancing video stall escalates only while frames stay flat', async () =>
   try {
     f.video.advancePlayback(0.9); await vi.advanceTimersByTimeAsync(1000);
     let ct = 2.1;
-    for (let i = 0; i < 5; i++) { f.video.advancePlayback(ct); ct += 1; await vi.advanceTimersByTimeAsync(1000); }
+    for (let i = 0; i < 2; i++) { f.video.advancePlayback(ct); ct += 1; await vi.advanceTimersByTimeAsync(1000); }
     expect(rungs).toEqual([1]);
     // The nudge restarts video: frames advance and the episode resets.
     for (let i = 0; i < 6; i++) {
@@ -531,11 +534,34 @@ it.each(['deep', 'live edge'] as const)('an advancing stall keeps its deadline w
   const edge = (ct: number) => mode === 'deep' ? set(14, 14) : set(ct + 0.8, ct + 0.85);
   try {
     edge(0.9); f.video.advancePlayback(0.9); f.video.frames += 30; await vi.advanceTimersByTimeAsync(1000);
-    edge(2.1); f.video.advancePlayback(2.1); await vi.advanceTimersByTimeAsync(1000); // crossed; frames flat
-    edge(3.1); f.video.advancePlayback(3.1); await vi.advanceTimersByTimeAsync(1000);
+    edge(2.1); f.video.advancePlayback(2.1); f.video.frames += 30; await vi.advanceTimersByTimeAsync(1000); // crossed
+    edge(3.1); f.video.advancePlayback(3.1); await vi.advanceTimersByTimeAsync(1000); // first frameless sample
     edge(3.3); f.video.advancePlayback(3.3); f.video.readyState = 2; await vi.advanceTimersByTimeAsync(1000);
     expect(rungs).toEqual([]);
     set(14, 14); await vi.advanceTimersByTimeAsync(1000);
+    expect(rungs).toEqual([1]); expect(f.video.seekCount).toBe(1); expect(f.jumps).toHaveLength(0);
+  } finally { f.adapter.destroy(); }
+});
+
+// Lab shape: a buffer append is often in flight at the check where rung 1
+// falls due. Rung 1 is retried once that work completes, not a second later.
+it('a due advancing-stall rung held by an in-flight append fires once it completes', async () => {
+  const f = await ready(), rungs: number[] = [];
+  f.adapter.onWedge = info => { rungs.push(info.rung); };
+  source.videoBuffer.buffered = makeTimeRanges([[0, 1], [2, 30]]);
+  source.audioBuffer.buffered = makeTimeRanges([[0, 30]]);
+  f.video.buffered = makeTimeRanges([[0, 1], [2, 30]]);
+  try {
+    f.video.advancePlayback(0.9); await vi.advanceTimersByTimeAsync(1000);
+    f.video.advancePlayback(2.1); await vi.advanceTimersByTimeAsync(1000); // first frameless sample
+    source.videoBuffer.autoComplete = false;
+    f.adapter.appendChunk('video', segment(1), 'video', 7n);
+    expect(source.videoBuffer.updating).toBe(true);
+    f.video.advancePlayback(3.1); await vi.advanceTimersByTimeAsync(1000); // due, but held
+    expect(rungs).toEqual([]);
+    source.videoBuffer.updating = false; source.videoBuffer.fire('update'); source.videoBuffer.fire('updateend');
+    await settle();
+    await vi.advanceTimersByTimeAsync(300);
     expect(rungs).toEqual([1]); expect(f.video.seekCount).toBe(1); expect(f.jumps).toHaveLength(0);
   } finally { f.adapter.destroy(); }
 });
