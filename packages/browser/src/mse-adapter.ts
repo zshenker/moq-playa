@@ -3643,9 +3643,14 @@ export class MseMediaSource implements MediaSourceLike {
       this.wedgeLastTime = ct;
       if (!advancing) {
         // The clock slows to a stop at the end of a carry: with frames still
-        // flat after the same witnessed hole, the episode keeps its deadline
-        // and the frozen path below picks it up on the next sample.
-        if (this.wedgeAdvancingStall && framesFlat && this.wedgeVideoHole !== null) return;
+        // flat after the same witnessed hole, the episode keeps its deadline.
+        // Once readyState has dropped (the clock is stopping), a due rung 1
+        // fires now, revalidated; otherwise the frozen path below picks the
+        // episode up on the next sample.
+        if (this.wedgeAdvancingStall && framesFlat && this.wedgeVideoHole !== null) {
+          if (this.wedgeRung === 0 && (v.readyState ?? 0) < 3) this.retryDueWedge(nowMs);
+          return;
+        }
         this.wedgeAdvancingStall = false;
         this.wedgeFrozenSinceMs = null;
         this.wedgeRung = 0;
