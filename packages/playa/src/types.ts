@@ -69,6 +69,11 @@ export interface PlayerOptions {
   readonly selection?: MoqtPlayerConfig['selection'];
   /** Ordered preferred audio languages within the chosen program; omitted keeps catalog order. */
   readonly audioLanguages?: readonly string[];
+  /**
+   * Experimental: probe for spare capacity before an automatic upshift, so
+   * ABR can step up on live streams. Default: false.
+   */
+  readonly abrUpshiftProbe?: boolean;
   /** Cap quality to a maximum resolution. */
   readonly maxResolution?: { readonly width: number; readonly height: number };
 

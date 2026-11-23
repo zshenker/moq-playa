@@ -120,6 +120,27 @@ describe.each([14, 16, 18] as const)('draft %i Joining FETCH priority', draft =>
   });
 });
 
+describe.each([14, 16, 18] as const)('draft %i Standalone FETCH priority', draft => {
+  it.each([0n, 42n, 255n, undefined])('carries priority %s on the wire', priority => {
+    const session = clientSession(draft);
+    const { actions } = session.fetch(NS, NAME, {
+      startGroup: 3n, startObject: 1n, endGroup: 3n, endObject: 0n,
+      ...(priority === undefined ? {} : { subscriberPriority: varint(priority) }),
+    });
+    const msg = (actions[0] as SendControlAction).message as Fetch;
+    const codec = createControlCodec(draft);
+    const decoded = codec.decode(codec.encode(msg), 0).message as Fetch;
+    expect(decoded.parameters.get(MessageParam.SUBSCRIBER_PRIORITY))
+      .toEqual(priority === undefined ? (draft === 14 ? [128n] : undefined) : [priority]);
+  });
+
+  it('rejects priority above 255', () => {
+    const session = clientSession(draft);
+    expect(() => session.fetch(NS, NAME, { startGroup: 0n, startObject: 0n, subscriberPriority: varint(256n) }))
+      .toThrow('SUBSCRIBER_PRIORITY must be 0-255');
+  });
+});
+
 describe('session.joiningFetch (outbound)', () => {
   let session: Session;
 
