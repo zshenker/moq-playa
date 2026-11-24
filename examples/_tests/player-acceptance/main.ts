@@ -71,6 +71,7 @@ const player = new Player(null, {
   ...(params.has('gestureAudio') ? { audioActivation: 'gesture' as const } : {}),
   startLevel: abr && !params.has('level') ? 'auto' : Number(params.get('level') ?? 0),
   ...(params.has('altGroup') ? { videoAltGroup: Number(params.get('altGroup')) } : {}),
+  ...(params.get('probe') === '1' ? { abrUpshiftProbe: true } : {}),
   moqtPlayerConfig: {
     logLevel: params.has('debug') ? 'debug' : 'none',
     ...(warmObserver ? { warmStartCurrentGroup: params.get('warm') === '1', objectTransform: warmObserver.transform } : {}),
@@ -120,7 +121,7 @@ groupTail?.observeDiagnostics(player.diagnosticSource, createMediaDiagnostics);
 const abrTrace: { timeMs: number; type: string; data: unknown }[] = [];
 if (abr) {
   for (const type of ['quality_switching', 'quality_switched', 'quality_switch_failed', 'stall', 'stall_recovered',
-    'catch_up_changed'] as const) {
+    'catch_up_changed', 'abr_probe'] as const) {
     player.diagnosticSource.on(type, data => abrTrace.push({ timeMs: performance.now(), type,
       data: 'error' in data ? { ...data, error: String(data.error) } : data }));
   }

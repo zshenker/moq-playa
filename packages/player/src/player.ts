@@ -46,6 +46,7 @@ import type { DataStreamHeader, MoqtObject, ObjectDatagram, SubgroupHeader } fro
 import { getSubgroupIdMode, SubgroupIdMode } from '@openmoq/transport';
 import { PlaybackPipeline, SyncController, DeliveryLagDetector, isKeyframePayload } from '@openmoq/playback';
 import { BufferBasedController } from '@openmoq/playback';
+import { UpshiftProbe, type ProbeVerdict } from './upshift-probe.js';
 import type { ClockSource, DecoderCommand, PlaybackEvent, RecoveryAction, RecoveryController, DecoderFeedback, PlaybackInputObserver, AudioTimingSource, VideoTimingSource, PlaybackSample } from '@openmoq/playback';
 import type { AltGroup, CatalogState, CatalogTrack, ResolvedTrackNamespace } from '@openmoq/msf';
 import type { SelectionIntent, TrackIdentity } from './catalog-selection.js';
@@ -10757,6 +10758,53 @@ export class MoqtPlayer {
   private static readonly MSE_SHORT_HOLE_SEC = 2;
   /** Delay after an automatic switch fails before another is attempted. */
   private static readonly ABR_SWITCH_FAILURE_HOLDOFF_US = 1_000_000;
+  /** Quiet period after a stall or other bad delivery event before probing. */
+  private static readonly PROBE_QUIET_US = 4_000_000;
+  /** Wait after playback starts, and after an upshift, before probing. */
+  private static readonly PROBE_SETTLE_US = 3_000_000;
+  /**
+   * After a probe-led upshift commits, an empty MSE reading without a
+   * reported stall is the switch window, not starvation; the stall handler
+   * owns real starvation.
+   */
+  private static readonly SWITCH_SETTLE_US = 3_000_000;
+  /** When the last probe-led upshift was requested; 0 when none is pending or settling. */
+  private probeUpshiftRequestedUs = 0;
+  /** Last MSE stall reported for missing delivery (not a source media gap). */
+  private lastMseStallUs = 0;
+  /** Subscriber priority of a probe FETCH: below all live media. */
+  private static readonly PROBE_PRIORITY = 255n;
+  /** Capacity probing for upshift; created on first use with the player clock. */
+  private upshiftProbe: UpshiftProbe | null = null;
+  /** Newest group seen on the live video subscription, keyed by its alias. */
+  private latestLiveVideoGroup: { alias: bigint; connection: MoqtConnection; group: bigint; object: bigint;
+    startedUs: number; durationUs: number | null } | null = null;
+  /**
+   * Where in the live group a probe may start, as fractions of the group's
+   * measured duration. A probe FETCHes the current group's objects published
+   * so far, the one range every relay that serves joins still holds, so it
+   * needs some of the group behind it; starting before the middle leaves the
+   * rest of the group to drain any backlog before the next keyframe.
+   */
+  private static readonly PROBE_GROUP_WINDOW = [0.35, 0.6] as const;
+  /**
+   * The window when the last current-group burst was too small to judge and
+   * the previous group is unavailable: later in the group, more is published.
+   */
+  private static readonly PROBE_GROUP_WINDOW_LATE = [0.6, 0.85] as const;
+  /**
+   * A previous-group probe asks for about this long of data at the rate it
+   * must show: long enough to time (and to span a transport delivery-rate
+   * sample), short enough that little is queued behind an early cancel.
+   */
+  private static readonly PROBE_BURST_TARGET_S = 0.25;
+  /** Sessions that reported their close: a probe is never sent on one. */
+  private readonly closedProbeConnections = new WeakSet<MoqtConnection>();
+  /**
+   * Sessions whose relay refused (or returned nothing for) a FETCH of the
+   * previous group: probes there use the current group only.
+   */
+  private readonly probePreviousGroupUnavailable = new WeakSet<MoqtConnection>();
 
   private isLocDeliveryHealthy(): boolean {
     const now = this.clock.now();
@@ -10887,7 +10935,10 @@ export class MoqtPlayer {
       && manager?.mediaInputGeneration === generation && this.videoMeasurementMode === mode
       && !this.pendingVideoSwitch && !this.switchInProgress && !this.mediaSelection && !this.currentMigration && (!this.seekIsPreparing() || this.playingLocQualityAvailable());
     if (!live()) return;
-    const lag = this.risingVideoDeliveryLag();
+    // A probe's burst can lift the delivery trend on a relay that does not
+    // fully honour its low priority; a probe that hurts live media fails on
+    // its own timeout or measures too little, so the trend waits for it.
+    const lag = this.upshiftProbe?.probing ? null : this.risingVideoDeliveryLag();
     if (!live()) return;
     // Don't trigger ABR while a switch is in flight — give the current
     // switch time to deliver data before deciding to switch again.
@@ -10923,6 +10974,12 @@ export class MoqtPlayer {
         // lower rung would not fill it. Thin, not empty.
         effectiveBufferUs = abr.lowThresholdUs;
       } else if (bufferUs === 0) {
+        // Just after a probe-led upshift MSE can read empty while the new
+        // rung's media lands; without a reported stall that is not a reason
+        // to cascade further downshifts.
+        const switchedAt = controller.lastSwitchAtUs, nowUs = this.clock.now();
+        if (this.probeUpshiftRequestedUs > 0 && switchedAt !== undefined && switchedAt >= this.probeUpshiftRequestedUs
+            && nowUs - switchedAt < MoqtPlayer.SWITCH_SETTLE_US && this.lastMseStallUs < switchedAt) return;
         // Truly empty — always report emergency, don't let stale
         // bandwidth estimates suppress the downshift.
         effectiveBufferUs = 0;
@@ -10954,7 +11011,10 @@ export class MoqtPlayer {
       bandwidthEstimateKbps: bandwidthKbps,
     });
 
-    if (decision.action === 'hold') return;
+    if (decision.action === 'hold') {
+      if (this.config.abrUpshiftProbe === true) this.maybeProbeForUpshift(effectiveBufferUs, live);
+      return;
+    }
 
     // Block upshift for 15s after any downshift — prevents oscillation
     // where a lower-bitrate stream inflates the throughput estimate.
@@ -10988,7 +11048,12 @@ export class MoqtPlayer {
         effectiveBufferUs / 1_000_000, bandwidthKbps, verb, newTrack.name);
       const freshLag = lag ? this.risingVideoDeliveryLag() : null;
       if (!live() || lag && freshLag?.state !== lag.state) return;
-      if (isDown) this.lastAbrDownshiftUs = nowUs;
+      if (isDown) {
+        this.lastAbrDownshiftUs = nowUs;
+        this.probeUpshiftRequestedUs = 0;
+        this.upshiftProbe?.abort();
+        this.upshiftProbe?.resetBackoff();
+      }
       if (freshLag) freshLag.state.lastAttemptUs = freshLag.nowUs;
       // No stats or controller mutation here — deferred to completePendingVideoSwitch.
       this.selectVideoTrack({ name: newTrack.name, namespace: trackNamespaceFields(newTrack, this.config.namespace) }, 'bandwidth', isDown ? 'downshift' : 'upshift')
@@ -11014,6 +11079,149 @@ export class MoqtPlayer {
       }
     } catch { /* A detached element shows no coverage. */ }
     return false;
+  }
+
+  private noteLiveVideoGroup(owner: { alias: bigint; connection: MoqtConnection }, obj: MoqtObject): void {
+    const group = BigInt(obj.groupId), current = this.latestLiveVideoGroup;
+    const object = BigInt(obj.objectId), now = this.clock.now();
+    if (current && current.alias === owner.alias && current.connection === owner.connection) {
+      if (group > current.group) {
+        current.durationUs = group === current.group + 1n && object === 0n ? now - current.startedUs : null;
+        current.group = group; current.object = object; current.startedUs = now;
+      } else if (group === current.group && object > current.object) {
+        current.object = object;
+      }
+    } else {
+      this.latestLiveVideoGroup = { alias: owner.alias, connection: owner.connection, group, object, startedUs: now, durationUs: null };
+    }
+  }
+
+  /**
+   * Start a capacity probe when ABR holds below the top rung on healthy live
+   * playback. The probe FETCHes the published part of the playing rung's
+   * current group (after its keyframe) at the lowest priority; its verdict may
+   * step up one rung.
+   */
+  private maybeProbeForUpshift(effectiveBufferUs: number, live: () => boolean): void {
+    const controller = this.qualityController, connection = this.connection;
+    if (!controller || !connection || !controller.isAutoQuality || this.closedProbeConnections.has(connection)) return;
+    const next = controller.peekHigherVideoQuality();
+    const current = controller.currentVideoTrack;
+    if (!next || !current || !current.isLive) return;
+    const probe = this.upshiftProbe ??= (() => {
+      const created = new UpshiftProbe(this.clock);
+      created.defer(MoqtPlayer.PROBE_SETTLE_US);
+      return created;
+    })();
+    if (!probe.due()) return;
+    const now = this.clock.now();
+    if (this.lastAbrDownshiftUs > 0 && now - this.lastAbrDownshiftUs < MoqtPlayer.ABR_UPSHIFT_STABILITY_US) return;
+    if (this.videoPipeline) {
+      const lastBad = Math.max(this.lastLocStallUs, this.lastLocDecodeErrorUs, this.lastLocPartialAbandonUs, this.lastLocQueuePressureUs);
+      if (lastBad > 0 && now - lastBad < MoqtPlayer.PROBE_QUIET_US) return;
+      if (this.videoRecoveryActive || this.locHealthyRenderCount < MoqtPlayer.LOC_MIN_HEALTHY_RENDERS) return;
+    } else if (effectiveBufferUs <= 0 || this.videoRecoveryActive || this.consecutiveStallCount > 0) {
+      return;
+    }
+    const owner = this.videoLagOwner() ?? this.captureVideoMeasurementOwner();
+    const latest = this.latestLiveVideoGroup;
+    if (!owner || !latest || latest.alias !== owner.alias || latest.connection !== connection
+        || latest.durationUs === null) return;
+    // Prefer the whole previous group: a complete group is the largest burst
+    // a relay holding more than one group can send, and its bytes are long
+    // published. Without it, use the current group so far.
+    const previous = latest.group > 0n && !this.probePreviousGroupUnavailable.has(connection);
+    if (!previous && latest.object < 2n) return;
+    const window = !previous && probe.wantsLarger ? MoqtPlayer.PROBE_GROUP_WINDOW_LATE : MoqtPlayer.PROBE_GROUP_WINDOW;
+    const into = (now - latest.startedUs) / latest.durationUs;
+    if (into < window[0] || into > window[1]) return;
+    const nextKbps = (next.bitrate ?? 0) / 1000;
+    if (!(nextKbps > 0)) return;
+    // The link must carry the selected audio as well; on low rungs it is a
+    // large share of the total.
+    const audioSel = this._selection.audio;
+    const audioTrack = audioSel ? this.catalogTrackFor(audioSel.name, audioSel.namespaceFields, 'audio') : undefined;
+    const audioKbps = (audioTrack?.bitrate ?? 0) / 1000;
+    const requiredKbps = nextKbps + (Number.isFinite(audioKbps) && audioKbps > 0 ? audioKbps : 0);
+    // From each group's second object: the keyframe is the largest object, and
+    // a scheduler that cannot pre-empt an object in progress would hold live
+    // media behind it. The current group goes up to the newest object seen;
+    // the previous group up to PROBE_BURST_TARGET_S at the required rate,
+    // estimated from the current rung's bitrate and object rate (whole when
+    // that can't be estimated or the group is smaller).
+    let previousEnd = 0n;
+    const objectsPerGroup = Number(latest.object) / into, currentKbps = (current.bitrate ?? 0) / 1000;
+    if (previous && objectsPerGroup >= 2 && Number.isFinite(currentKbps) && currentKbps > 0) {
+      const bytesPerObject = (currentKbps * 125 * (latest.durationUs / 1e6)) / objectsPerGroup;
+      const targetBytes = requiredKbps * 125 * probe.options.headroom * MoqtPlayer.PROBE_BURST_TARGET_S;
+      const count = Math.max(2, Math.ceil(targetBytes / bytesPerObject));
+      if (count + 1 < objectsPerGroup) previousEnd = BigInt(count + 1);
+    }
+    const request = previous
+      ? { trackName: current.name, startGroup: latest.group - 1n, startObject: 1n, endGroup: latest.group - 1n, endObject: previousEnd }
+      : { trackName: current.name, startGroup: latest.group, startObject: 1n, endGroup: latest.group, endObject: latest.object + 1n };
+    const ns = trackNamespaceFields(current, this.config.namespace).map(field => this.enc.encode(field));
+    const name = this.enc.encode(current.name);
+    const targetTrack = next;
+    this.log.info('ABR probe: FETCH %s group %s (%s; live group %s, object %s) objects 1-%s to test for %s (%s kbps)', current.name,
+      String(request.startGroup), previous ? 'previous' : 'current', String(latest.group), String(latest.object),
+      request.endObject === 0n ? 'end' : String(request.endObject - 1n), next.name, `${nextKbps}+${requiredKbps - nextKbps} audio`);
+    probe.start({
+      request,
+      requiredKbps,
+      issue: (request, arrive, end) => {
+        let requestId: bigint | null = null, cancelled = false, objects = 0;
+        // A refused or empty previous group says nothing about the link: fall
+        // back to the current group on this session and retry soon.
+        const unavailable = (reason: string): boolean => {
+          if (!previous || objects > 0 || cancelled) return false;
+          this.probePreviousGroupUnavailable.add(connection);
+          end(false, `previous group unavailable (${reason})`, true);
+          return true;
+        };
+        connection.fetch(ns, name, {
+          startGroup: request.startGroup, startObject: request.startObject, endGroup: request.endGroup, endObject: request.endObject,
+          groupOrder: 'ascending', subscriberPriority: varint(MoqtPlayer.PROBE_PRIORITY),
+          onRequestId: (id: bigint) => { requestId = BigInt(id); },
+          receiver: {
+            onObject: (object: MoqtObject) => { if (object.kind === 'data') { objects++; arrive(object.payload.byteLength); } },
+            onClosed: (terminal: string) => {
+              if (unavailable(`stream ended: ${terminal} with no objects`)) return;
+              end(terminal === 'fin', `stream ended: ${terminal}`);
+            },
+          },
+        }).then(id => { requestId ??= BigInt(id); if (cancelled) void connection.fetchCancel(varint(requestId)).catch(() => {}); })
+          .catch((error: unknown) => {
+            const reason = error instanceof Error ? error.message : String(error);
+            if (!unavailable(reason)) end(false, reason);
+          });
+        return {
+          cancel: () => {
+            cancelled = true;
+            if (requestId !== null) void connection.fetchCancel(varint(requestId)).catch(() => {});
+          },
+        };
+      },
+      onVerdict: verdict => this.onUpshiftProbeVerdict(verdict, targetTrack, live),
+    });
+  }
+
+  private onUpshiftProbeVerdict(verdict: ProbeVerdict, target: CatalogTrack, live: () => boolean): void {
+    const r = verdict.result;
+    this.log.info('ABR probe: %s; estimate %s kbps → %s', r.kind === 'measured'
+      ? `${r.bytes} B over ${r.lowerBound ? '<' : ''}${(r.durationUs / 1000).toFixed(0)} ms${r.early ? ' (decided early)' : ''}` : `${r.kind}: ${r.reason}`,
+      verdict.estimateKbps === null ? 'n/a' : Math.round(verdict.estimateKbps),
+      verdict.upshift ? `upshift to ${target.name}` : verdict.retryLarger ? 'hold; too small to judge, retrying larger' : 'hold');
+    this.emitter.emit('abr_probe', { type: 'abr_probe', result: r.kind, estimateKbps: verdict.estimateKbps,
+      targetTrackName: target.name, upshift: verdict.upshift });
+    if (!verdict.upshift || !live()) return;
+    const controller = this.qualityController;
+    if (!controller || controller.peekHigherVideoQuality() !== target) return;
+    this.upshiftProbe?.defer(MoqtPlayer.PROBE_SETTLE_US + MoqtPlayer.ABR_UPSHIFT_STABILITY_US / 3);
+    this.log.warn('Probe estimate %.0fkbps → upshift to %s', verdict.estimateKbps, target.name);
+    this.probeUpshiftRequestedUs = this.clock.now();
+    this.selectVideoTrack({ name: target.name, namespace: trackNamespaceFields(target, this.config.namespace) }, 'bandwidth', 'upshift')
+      .catch((err) => { this.log.warn('ABR upshift to "%s" failed: %s', target.name, err); });
   }
 
   /**
@@ -11665,6 +11873,7 @@ export class MoqtPlayer {
       ),
 
       onClose: (error, reason) => {
+        this.closedProbeConnections.add(conn);
         // Withdraw timeline authority before cancellation invokes application code.
         if (this.timelineSource?.connection === conn) this.timelineSource = null;
         let seekCleanupFailed = false;
@@ -11960,6 +12169,11 @@ export class MoqtPlayer {
         // At replay time, the new track is registered and onObject fires normally.
         if (this.subscriptionManager?.getMediaType(alias) !== undefined) {
           this.recordVideoPayload(receipt, obj);
+          if (receipt) this.noteLiveVideoGroup(receipt.owner, obj);
+          // Every live media byte (audio too) shares the path a probe measures.
+          if (this.upshiftProbe?.probing && obj.kind === 'data') {
+            this.upshiftProbe.observeLive(obj.payload.byteLength + (obj.extensions?.byteLength ?? 0));
+          }
           this.watchdog.fulfill('first_media_object');
           // Bind the LOC wire profile AND the malformed-recovery target to THIS
           // connection — a cross-draft migration must not decode a late
@@ -13965,6 +14179,7 @@ export class MoqtPlayer {
         // A media-gap stall is missing SOURCE media the adapter already
         // skipped — not a bandwidth signal. Count it, never downshift on it.
         if (cause === 'media-gap') return;
+        this.lastMseStallUs = this.clock.now();
 
         // Don't cascade downshifts while a switch is already in flight.
         // Each switch needs time for the relay to deliver the new track's
