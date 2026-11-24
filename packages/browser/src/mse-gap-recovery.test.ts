@@ -550,8 +550,9 @@ it.each(['deep', 'live edge', 'thin at stop'] as const)('an advancing stall keep
 // Lab shape: after a downshift the new rung's video can arrive at about real
 // time, so the carry runs only 0.2-0.5 s behind the newest video, too little
 // to call it an advancing stall. When the clock then stops, the frameless
-// carry is the evidence: half a second ahead is enough coverage and rung 1
-// fires on the second frozen sample, as for an advancing stall. Without a carry
+// carry is the evidence: half a second ahead is enough coverage, and the
+// deadline starts on the sample that sees the clock stopping, so rung 1 fires
+// on the first frozen sample. Without a carry
 // (frames advancing, or a clock that only moved below readyState 3) the stop
 // still needs over a second ahead and the normal deadline.
 it.each(['carry', 'frames', 'not playing'] as const)('a stop after a thin post-hole carry (%s)', async mode => {
@@ -571,11 +572,42 @@ it.each(['carry', 'frames', 'not playing'] as const)('a stop after a thin post-h
     }
     expect(rungs).toEqual([]);
     set(3.9); f.video.advancePlayback(3.3); f.video.readyState = 2; await vi.advanceTimersByTimeAsync(1000); // stops
-    set(4.1); await vi.advanceTimersByTimeAsync(1000); // first frozen sample
     expect(rungs).toEqual([]);
+    set(4.1); await vi.advanceTimersByTimeAsync(1000); // first frozen sample
+    expect(rungs).toEqual(mode === 'carry' ? [1] : []);
     set(4.2); await vi.advanceTimersByTimeAsync(1000);
     expect(rungs).toEqual(mode === 'carry' ? [1] : []);
     expect(f.video.seekCount).toBe(mode === 'carry' ? 1 : 0);
+    expect(f.jumps).toHaveLength(0);
+  } finally { f.adapter.destroy(); }
+});
+
+// Lab shape: a second downshift about a second after the first leaves a
+// second narrow hole. The clock carries past the first hole with frames flat,
+// then crosses the second between samples and is already stopping (readyState
+// 2) on the sample that sees it. The carry continues across the second hole,
+// so the stop gets the same timing. Frames moving between the two holes end
+// the carry, and the stop waits the normal deadline.
+it.each(['chained', 'frames between'] as const)('a stop after a thin carry across two holes (%s)', async mode => {
+  const f = await ready(), rungs: number[] = [];
+  f.adapter.onWedge = info => { rungs.push(info.rung); };
+  const set = (midEnd: number, videoEnd: number) => {
+    const video: Array<[number, number]> = [[0, 1], [2, midEnd], ...(videoEnd > 0 ? [[3.5, videoEnd] as [number, number]] : [])];
+    source.videoBuffer.buffered = makeTimeRanges(video);
+    source.audioBuffer.buffered = makeTimeRanges([[0, Math.max(midEnd, videoEnd) + 0.5]]);
+    f.video.buffered = makeTimeRanges(video);
+  };
+  try {
+    set(2.4, 0); f.video.advancePlayback(0.9); f.video.frames += 30; await vi.advanceTimersByTimeAsync(1000);
+    set(2.4, 0); f.video.advancePlayback(2.1); await vi.advanceTimersByTimeAsync(1000); // carry past the first hole
+    set(3.1, 0); f.video.advancePlayback(2.8); if (mode === 'frames between') f.video.frames += 30;
+    await vi.advanceTimersByTimeAsync(1000);
+    set(3.1, 4.1); f.video.advancePlayback(3.6); f.video.readyState = 2; await vi.advanceTimersByTimeAsync(1000); // second hole, stopping
+    expect(rungs).toEqual([]);
+    set(3.1, 4.3); await vi.advanceTimersByTimeAsync(1000); // first frozen sample
+    expect(rungs).toEqual(mode === 'chained' ? [1] : []);
+    set(3.1, 4.5); await vi.advanceTimersByTimeAsync(1000);
+    expect(rungs).toEqual(mode === 'chained' ? [1] : []);
     expect(f.jumps).toHaveLength(0);
   } finally { f.adapter.destroy(); }
 });
