@@ -5163,12 +5163,6 @@ export class MoqtPlayer {
           entryCount: this.timelineState.entries.length,
           ...(duration !== undefined ? { duration } : {}),
         });
-        if (duration !== undefined && current()) {
-          this.emitter.emit('duration_changed', {
-            type: 'duration_changed',
-            durationMs: duration,
-          });
-        }
       } else {
         // Incremental update — emit timeline_updated
         this.emitter.emit('timeline_updated', {
@@ -5177,6 +5171,9 @@ export class MoqtPlayer {
           entryCount: this.timelineState.entries.length,
           ...(duration !== undefined ? { duration } : {}),
         });
+      }
+      if (duration !== undefined && (prevEntryCount === 0 || duration !== getTimelineDuration(timeline)) && current()) {
+        this.emitter.emit('duration_changed', { type: 'duration_changed', durationMs: duration });
       }
     };
 
@@ -11562,7 +11559,7 @@ export class MoqtPlayer {
    *
    * 1. Applies config.errorFilter (return null = suppress)
    * 2. Emits structured `error` event
-   * 3. Emits legacy `session_error` for backward compatibility
+   * 3. Emits legacy `session_error` if the filtered error is fatal or its source is connection
    */
   private emitError(playerError: PlayerError): void {
     // An intentionally destroyed player emits NO error events: teardown noise
@@ -11582,9 +11579,10 @@ export class MoqtPlayer {
 
     this.emitter.emit('error', { type: 'error', error: filtered });
 
-    // Backward compat: also fire session_error with an Error wrapping the message
-    const legacyError = filtered.cause ?? new Error(filtered.message);
-    this.emitter.emit('session_error', { type: 'session_error', error: legacyError });
+    if (filtered.severity === 'fatal' || filtered.source === 'connection') {
+      const legacyError = filtered.cause ?? new Error(filtered.message);
+      this.emitter.emit('session_error', { type: 'session_error', error: legacyError });
+    }
   }
 
   /**
@@ -13925,6 +13923,8 @@ export class MoqtPlayer {
         if (this.videoDeliveryEnding()) return;
         this._stats.recordStall(durationMs);
         this.emitter.emit('stall', { type: 'stall', durationMs });
+        // A closed session still contributes stall stats, but cannot recover media.
+        if (this.connection?.session.state === SessionState.CLOSED) return;
         this.lastLocStallUs = this.clock.now();
         this.locHealthyRenderCount = 0;
 
@@ -15267,7 +15267,7 @@ export class MoqtPlayer {
     mediaType: 'video' | 'audio',
     startGroup?: bigint,
   ): void {
-    if (!this.connection) return;
+    if (!this.connection || this.connection.session.state === SessionState.CLOSED) return;
 
     const matching = [...this.activeSubscriptions.entries()]
       .filter(([requestId, sub]) => sub.mediaType === mediaType && requestId !== this.timelineRequestId
